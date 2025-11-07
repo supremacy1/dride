@@ -117,3 +117,8 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Ensure react-native-vector-icons font files are copied into the Android assets
+// so icons render correctly. This will run the fonts.gradle script provided by
+// react-native-vector-icons during the Gradle build.
+apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"

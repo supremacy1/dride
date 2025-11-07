@@ -1,7 +1,8 @@
-const db = require('../db');
-const { sendWelcomeEmail } = require('../services/emailService');
+const db = require('./db');
+const { sendWelcomeEmail } = require('./emailService');
 
 exports.register = async (req, res) => {
+  console.log('Register request body:', req.body);
   const { fullname, email, phone } = req.body;
 
   if (!fullname || !email || !phone) {
@@ -24,7 +25,7 @@ exports.register = async (req, res) => {
     res.status(201).json({ message: 'User registered successfully!', userId: result.insertId });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ message: 'Server error during registration.' });
+    res.status(500).json({ message: 'Server error during registration.', error: error.message });
   }
 };
 

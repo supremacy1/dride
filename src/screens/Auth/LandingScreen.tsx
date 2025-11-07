@@ -178,10 +178,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#eee',
   },
   brand: { fontSize: 22, fontWeight: '700', color: '#fff' },
-  hero: { paddingHorizontal: 20,
-     paddingVertical: 10,
-
-    },
+  hero: { paddingHorizontal: 20, paddingVertical: 10 },
 
   heroTitle: { fontSize: 34, fontWeight: '800', marginBottom: 6 },
   heroSubtitle: { fontSize: 16, color: '#141212ff', marginBottom: 18 },
@@ -211,7 +208,7 @@ const styles = StyleSheet.create({
   slideshowImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   features: { padding: 20, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
   feature: { marginBottom: 14 },
-  featureTitle: { fontSize: 16, fontWeight: '700' },
+  featureTitle: { fontSize: 16, fontWeight: '700' ,color:'#FF4D00'},
   featureSubtitle: { fontSize: 13, color: '#666' },
   footer: { padding: 20, borderTopWidth: 1, borderTopColor: '#f8f8f8' },
   linkButton: { paddingVertical: 10 },

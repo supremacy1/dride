@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.INTERNET" />
+  <!-- Permissions required for geolocation and network access -->
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+  <uses-permission android:name="android.permission.INTERNET" />
 
     <application
       android:name=".MainApplication"
@@ -11,6 +14,20 @@
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
       android:supportsRtl="true">
+      <meta-data
+          android:name="com.facebook.react.minifyEnabled"
+          android:value="true" />
+      <meta-data
+          android:name="com.facebook.react.devSupportEnabled"
+          android:value="true" />
+      <meta-data
+          android:name="com.facebook.react.useDeveloperSupport"
+          android:value="true" />
+          <meta-data
+    android:name="com.google.android.geo.API_KEY"
+    android:value="AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ"/>
+    <!-- android:value="AIzaSyC-2ySlslZZ7Yahh63B_qf7QpwlumElQnU"/> -->
+
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
@@ -23,5 +40,6 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
+     
     </application>
 </manifest>
