@@ -16,7 +16,7 @@ import { useAuth } from '../../context/AuthContext';
 // const API_URL = 'http://192.168.1.101'; // Use your server's IP for device testing
 // For Android emulator use 10.0.2.2:3001 (or 10.0.3.2 for Genymotion).
 // Use your machine's IP address (confirmed reachable in browser)
-const API_URL = 'http://192.168.1.103:3001';
+const API_URL = 'http://192.168.1.102:3001';
 
 const LoginScreen = ({ navigation }: { navigation: any }) => {
   const [email, setEmail] = useState('');

@@ -84,7 +84,7 @@ const LandingScreen = ({ navigation }: { navigation: any }) => {
           <Text style={styles.brand}>D-Ride</Text>
         </View>
       </View>
-
+      
       <View style={styles.hero}>
         {/* local hero background image and overlay */}
         {/* <Image source={require('../../assets/dride.jpg')} style={styles.heroBackground} /> */}
@@ -98,7 +98,7 @@ const LandingScreen = ({ navigation }: { navigation: any }) => {
         <View style={styles.ctaRow}>
           <TouchableOpacity
             style={[styles.cta, styles.ctaPrimary]}
-            onPress={() => navigation.navigate('Auth')}
+            onPress={() => navigation.navigate('Login')}
           >
             <Text style={styles.ctaPrimaryText}>Book a ride</Text>
           </TouchableOpacity>

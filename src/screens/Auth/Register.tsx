@@ -16,7 +16,7 @@ import Button from '../../components/Button';
 // Remove trailing slash to avoid accidental double-slash in requests.
 // Use your machine's IP address (confirmed reachable in browser)
 // const API_URL = 'http://192.168.166.186:3001';
-const API_URL = 'http://192.168.127.186:3001';
+const API_URL = 'http://192.168.1.103:3001';
 
 const RegisterScreen = ({ navigation }: { navigation: any }) => {
   const [fullname, setFullname] = useState('');
