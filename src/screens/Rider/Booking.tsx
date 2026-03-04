@@ -1,431 +1,388 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  TextInput,
   TouchableOpacity,
+  TextInput,
   FlatList,
   ActivityIndicator,
   Alert,
-  Platform,
   PermissionsAndroid,
+  Platform,
+  Dimensions,
+  Keyboard,
 } from 'react-native';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapViewDirections from 'react-native-maps-directions';
+import Geolocation from '@react-native-community/geolocation';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
-import { useAuth } from '../../context/AuthContext';
-// Use a maintained geolocation package. Install `react-native-geolocation-service`.
-// Lazy-loaded at runtime to avoid import-time native crashes when the
-// native module is missing/unlinked.
-// import Geolocation from 'react-native-geolocation-service';
-// NOTE: You must provide a Google Maps Places API key. For development we
-// expose it via `src/config/generatedEnv.ts`. That file should export
-// `GOOGLE_MAPS_API_KEY` (this is a quick dev helper — don't commit secrets in
-// production). For your convenience, I'm adding the key you provided.
-// import { GOOGLE_MAPS_API_KEY as GOOGLE_API_KEY } from '../../config/generatedEnv';
- 
-// --- Temporary API Key for local testing ---
-//const GOOGLE_API_KEY = 'AIzaSyC-2ySlslZZ7Yahh63B_qf7QpwlumElQnU'; // Replace with your actual key
- 
-const GOOGLE_API_KEY = 'AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ'; // Replace with your actual key
-const PLACES_AUTOCOMPLETE = 'https://maps.googleapis.com/maps/api/place/autocomplete/json';
-const PLACE_DETAILS = 'https://maps.googleapis.com/maps/api/place/details/json';
 
-const BookingScreen = ({ navigation: _navigation }: { navigation: any }) => {
+const GOOGLE_API_KEY = 'AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ';
+
+const { height } = Dimensions.get('window');
+
+const RIDE_TYPES = [
+  { id: 'bike', label: 'Bike', multiplier: 0.7, icon: 'two-wheeler' },
+  { id: 'standard', label: 'Standard', multiplier: 1, icon: 'directions-car' },
+  { id: 'xl', label: 'XL', multiplier: 1.5, icon: 'airport-shuttle' },
+  
+];
+
+const BookingScreen = () => {
+  const [region, setRegion] = useState<any>(null);
+  const [pickupCoords, setPickupCoords] = useState<any>(null);
+  const [destinationCoords, setDestinationCoords] = useState<any>(null);
   const [pickup, setPickup] = useState('');
-  const { signOut } = useAuth();
   const [destination, setDestination] = useState('');
+  const [distance, setDistance] = useState(0);
+  const [price, setPrice] = useState(0);
+  const [loadingLocation, setLoadingLocation] = useState(false);
+
   const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState<any[]>([]);
-  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-  const [currentCoords, setCurrentCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [selectedRideType, setSelectedRideType] = useState('standard');
 
+  // ============================
+  // GET CURRENT LOCATION
+  // ============================
   useEffect(() => {
-    // Request runtime location permission then get current position.
-    let isMounted = true;
-    // GEO will hold the runtime-loaded geolocation module (or null)
-    let GEO: any = null;
-
-    const requestAndFetch = async () => {
-      // Try to load the native module at runtime. If the require fails or the
-      // module doesn't expose expected functions, bail out gracefully.
-      try {
-        // runtime require; avoid top-level import which can crash if native module is missing
-  GEO = require('react-native-geolocation-service');
-      } catch {
-        console.warn('react-native-geolocation-service not available at runtime');
-        return;
+    const requestLocation = async () => {
+      if (Platform.OS === 'android') {
+        await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+        );
       }
 
-      // Defensive: ensure the runtime module exposes the expected API.
-      const geoAvailable = !!GEO && typeof GEO.getCurrentPosition === 'function';
-      if (!geoAvailable) {
-        console.warn('Geolocation native module is not available. Skipping location fetch.');
-        return;
-      }
-      try {
-        if (Platform.OS === 'android') {
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            {
-              title: 'Location Permission',
-              message:
-                'EasyRide needs access to your location to detect your pickup point and show nearby drivers.',
-              buttonPositive: 'OK',
-              buttonNegative: 'Cancel',
-            }
-          );
+      setLoadingLocation(true);
 
-          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            console.warn('Geolocation error: Location permission not granted.');
-            return;
-          }
-        } else {
-          // iOS: request authorization (guarded in case this method isn't present)
-          try {
-            if (typeof GEO.requestAuthorization === 'function') {
-              const auth = await GEO.requestAuthorization('whenInUse');
-              if (auth === 'denied' || auth === 'disabled' || auth === 'restricted') {
-                console.warn('Geolocation error: Location permission not granted.');
-                return;
-              }
-            }
-          } catch {
-            // Some versions return a boolean or throw — handle gracefully
-            // Fall through and try to get position; if it fails we'll catch below.
-            console.warn('Geolocation.requestAuthorization error');
-          }
-        }
+      Geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
 
-        // Final guard before calling getCurrentPosition
-        try {
-          if (typeof GEO.getCurrentPosition === 'function') {
-            GEO.getCurrentPosition(
-              (pos: any) => {
-                if (isMounted) {
-                  const { latitude, longitude } = pos.coords;
-                  setCurrentCoords({ lat: latitude, lng: longitude });
-                }
-              },
-              (err: any) => {
-                if (isMounted) {
-                  console.warn('Geolocation error:', err?.message || err);
-                }
-              },
-              { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
-            );
-          } else {
-            console.warn('Geolocation.getCurrentPosition is not a function.');
-          }
-        } catch (err) {
-          console.warn('Geolocation.getCurrentPosition threw an error:', err);
-        }
-      } catch {
-        console.warn('Geolocation not available');
-      }
+          const currentRegion = {
+            latitude,
+            longitude,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.05,
+          };
+
+          setRegion(currentRegion);
+          setPickupCoords({ latitude, longitude });
+          reverseGeocode(latitude, longitude);
+          setLoadingLocation(false);
+        },
+        (error) => {
+          Alert.alert('Location Error', error.message);
+          setLoadingLocation(false);
+        },
+        { enableHighAccuracy: true, timeout: 20000 }
+      );
     };
 
-    requestAndFetch();
-
-    return () => {
-      isMounted = false;
-      try {
-        if (GEO && typeof GEO.stopObserving === 'function') {
-          GEO.stopObserving(); // Clean up any active location watchers
-        }
-      } catch {
-        // ignore
-      }
-    };
+    requestLocation();
   }, []);
 
-  const fetchSuggestions = async (input: string, setter: (v: any[]) => void) => {
-    if (!input || input.length < 2) {
-      setter([]);
-      return;
-    }
-    if (!GOOGLE_API_KEY || GOOGLE_API_KEY.includes('YOUR_GOOGLE')) {
-      // Avoid making requests when key is missing
-      setter([]);
-      return;
-    }
-
-    setLoadingSuggestions(true);
+  // ============================
+  // REVERSE GEOCODE
+  // ============================
+  const reverseGeocode = async (lat: number, lng: number) => {
     try {
-      // Add a lightweight session token to group requests — helps billing & quota.
-      const session = Math.random().toString(36).slice(2);
-      const url = `${PLACES_AUTOCOMPLETE}?input=${encodeURIComponent(
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_API_KEY}`;
+      const response = await fetch(url);
+      const json = await response.json();
+      if (json.status === 'OK' && json.results.length > 0) {
+        setPickup(json.results[0].formatted_address);
+      }
+    } catch (error) {
+      console.warn('Reverse geocode error', error);
+    }
+  };
+
+  // ============================
+  // AUTOCOMPLETE & PLACES
+  // ============================
+  const fetchSuggestions = async (input: string, type: 'pickup' | 'destination') => {
+    if (input.length < 2) {
+      if (type === 'pickup') setPickupSuggestions([]);
+      else setDestinationSuggestions([]);
+      return;
+    }
+    try {
+      const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
         input
-      )}&key=${GOOGLE_API_KEY}&language=en&types=geocode&sessiontoken=${session}`;
-
-      const res = await fetch(url);
-      const json = await res.json();
-
-      // Debug: log raw response so it's visible in Metro console when troubleshooting
-      console.debug('Places autocomplete response', json);
-
-      // Handle API status codes from Google
-      if (!json) {
-        setter([]);
-      } else if (json.status === 'OK' && Array.isArray(json.predictions)) {
-        setter(json.predictions);
-      } else if (json.status === 'ZERO_RESULTS') {
-        // No matches — return empty list (not an error)
-        setter([]);
-      } else {
-        // Other statuses like REQUEST_DENIED, OVER_QUERY_LIMIT indicate config issues
-        console.warn('Places autocomplete returned status', json.status, json.error_message);
-        // Show a friendly alert once so dev can notice (avoid spamming)
-        Alert.alert('Location lookup error', json.error_message || json.status || 'Unknown error');
-        setter([]);
+      )}&key=${GOOGLE_API_KEY}&components=country:ng`;
+      const response = await fetch(url);
+      const json = await response.json();
+      if (json.status === 'OK') {
+        if (type === 'pickup') setPickupSuggestions(json.predictions);
+        else setDestinationSuggestions(json.predictions);
       }
-    } catch (e) {
-      console.warn('Places autocomplete error', e);
-      setter([]);
-    } finally {
-      setLoadingSuggestions(false);
+    } catch (error) {
+      console.warn('Autocomplete error', error);
     }
   };
 
-  const onSelectPlace = async (placeId: string, forField: 'pickup' | 'destination') => {
-    if (!GOOGLE_API_KEY || GOOGLE_API_KEY.includes('YOUR_GOOGLE')) {
-      // Can't resolve details without key; just close suggestions
+  const handleSelectPlace = async (placeId: string, description: string, type: 'pickup' | 'destination') => {
+    Keyboard.dismiss();
+    if (type === 'pickup') {
+      setPickup(description);
       setPickupSuggestions([]);
+    } else {
+      setDestination(description);
       setDestinationSuggestions([]);
-      return;
     }
 
     try {
-      const url = `${PLACE_DETAILS}?place_id=${placeId}&key=${GOOGLE_API_KEY}&fields=formatted_address,name,geometry`;
-      const res = await fetch(url);
-      const json = await res.json();
-
-      console.debug('Place details response', json);
-
-      if (json && (json.status === 'OK' || json.result)) {
-        const result = json.result || json;
-        const addr = result.formatted_address || result.name || '';
-        if (forField === 'pickup') {
-          setPickup(addr);
-          setPickupSuggestions([]);
-        } else {
-          setDestination(addr);
-          setDestinationSuggestions([]);
-        }
-      } else {
-        console.warn('Place details lookup failed', json?.status, json?.error_message);
-        Alert.alert('Place lookup error', json?.error_message || json?.status || 'Unable to resolve place');
+      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=geometry&key=${GOOGLE_API_KEY}`;
+      const response = await fetch(url);
+      const json = await response.json();
+      if (json.status === 'OK') {
+        const location = json.result.geometry.location;
+        const coords = { latitude: location.lat, longitude: location.lng };
+        if (type === 'pickup') setPickupCoords(coords);
+        else setDestinationCoords(coords);
       }
-    } catch (e) {
-      console.warn('Place details error', e);
+    } catch (error) {
+      Alert.alert('Error fetching place details');
     }
   };
 
-  const handleFindDriver = () => {
-    // Placeholder: in real app we'd query backend for nearby drivers.
-    // For now show a friendly message.
-    if (!pickup || !destination) {
-      Alert.alert('Missing information', 'Please enter both pickup and destination.');
-      return;
+  // ============================
+  // PRICE CALCULATION
+  // ============================
+  useEffect(() => {
+    if (distance > 0) {
+      setPrice(calculatePrice(distance, selectedRideType));
     }
+  }, [distance, selectedRideType]);
 
-    Alert.alert('No drivers available', 'Sorry — there are no drivers nearby right now.');
+  const calculatePrice = (km: number, typeId: string) => {
+    const type = RIDE_TYPES.find((t) => t.id === typeId);
+    const multiplier = type ? type.multiplier : 1;
+    const baseFare = 500; // ₦500 base
+    const perKm = 250;    // ₦250 per km
+    return (baseFare + km * perKm) * multiplier;
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Book a Ride</Text>
+      {region && (
+        <MapView
+          provider={PROVIDER_GOOGLE}
+          style={styles.map}
+          initialRegion={region}
+        >
+          {pickupCoords && <Marker coordinate={pickupCoords} title="Pickup" />}
 
-      <Text style={styles.label}>Pickup</Text>
-      <View style={styles.inputRow}>
-        <MaterialIcons name="my-location" size={20} color="#fa9907ff" style={styles.inputIcon} />
+          {destinationCoords && (
+            <Marker coordinate={destinationCoords} title="Destination" />
+          )}
+
+          {pickupCoords && destinationCoords && (
+            <MapViewDirections
+              origin={pickupCoords}
+              destination={destinationCoords}
+              apikey={GOOGLE_API_KEY}
+              strokeWidth={4}
+              strokeColor="black"
+              onReady={(result) => {
+                setDistance(result.distance);
+              }}
+            />
+          )}
+        </MapView>
+      )}
+
+      {/* Bottom Card */}
+      <View style={styles.bottomCard}>
+        <Text style={styles.title}>Book Ride</Text>
+
         <TextInput
+          placeholder="Enter Pickup"
           value={pickup}
-          onChangeText={(t) => {
-            setPickup(t);
-            fetchSuggestions(t, setPickupSuggestions);
+          onChangeText={(text) => {
+            setPickup(text);
+            fetchSuggestions(text, 'pickup');
           }}
-          placeholder={currentCoords ? 'Detecting your location...' : 'Enter pickup location'}
-          style={styles.inputFlex}
+          style={styles.input}
         />
-      </View>
-      {loadingSuggestions ? <ActivityIndicator /> : null}
-      {pickupSuggestions.length > 0 && (
-        <FlatList
-          data={pickupSuggestions}
-          keyExtractor={(item) => item.place_id}
-          style={styles.suggestions}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.suggestionItem}
-              onPress={() => onSelectPlace(item.place_id, 'pickup')}
-            >
-              <Text>{item.description}</Text>
-            </TouchableOpacity>
-          )}
-        />
-      )}
+        {pickupSuggestions.length > 0 && (
+          <FlatList
+            data={pickupSuggestions}
+            keyExtractor={(item) => item.place_id}
+            style={styles.suggestionsList}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.suggestionItem}
+                onPress={() => handleSelectPlace(item.place_id, item.description, 'pickup')}
+              >
+                <Text>{item.description}</Text>
+              </TouchableOpacity>
+            )}
+          />
+        )}
 
-      <Text style={styles.label}>Destination</Text>
-      <View style={styles.inputRow}>
-        <MaterialIcons name="place" size={20} color="#fa9907ff" style={styles.inputIcon} />
         <TextInput
+          placeholder="Enter Destination"
           value={destination}
-          onChangeText={(t) => {
-            setDestination(t);
-            fetchSuggestions(t, setDestinationSuggestions);
+          onChangeText={(text) => {
+            setDestination(text);
+            fetchSuggestions(text, 'destination');
           }}
-          placeholder="Enter destination"
-          style={styles.inputFlex}
+          style={styles.input}
         />
-      </View>
-      {destinationSuggestions.length > 0 && (
-        <FlatList
-          data={destinationSuggestions}
-          keyExtractor={(item) => item.place_id}
-          style={styles.suggestions}
-          renderItem={({ item }) => (
+        {destinationSuggestions.length > 0 && (
+          <FlatList
+            data={destinationSuggestions}
+            keyExtractor={(item) => item.place_id}
+            style={styles.suggestionsList}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.suggestionItem}
+                onPress={() => handleSelectPlace(item.place_id, item.description, 'destination')}
+              >
+                <Text>{item.description}</Text>
+              </TouchableOpacity>
+            )}
+          />
+        )}
+
+        {/* Ride Type Selector */}
+        <View style={styles.rideTypeContainer}>
+          {RIDE_TYPES.map((type) => (
             <TouchableOpacity
-              style={styles.suggestionItem}
-              onPress={() => onSelectPlace(item.place_id, 'destination')}
+              key={type.id}
+              style={[
+                styles.rideTypeOption,
+                selectedRideType === type.id && styles.selectedRideType,
+              ]}
+              onPress={() => setSelectedRideType(type.id)}
             >
-              <Text>{item.description}</Text>
+              <MaterialIcons
+                name={type.icon}
+                size={24}
+                color={selectedRideType === type.id ? '#fff' : '#333'}
+              />
+              <Text
+                style={[
+                  styles.rideTypeText,
+                  selectedRideType === type.id && styles.selectedRideTypeText,
+                ]}
+              >
+                {type.label}
+              </Text>
             </TouchableOpacity>
-          )}
-        />
-      )}
-
-      <TouchableOpacity style={styles.findBtn} onPress={handleFindDriver}>
-        <MaterialIcons name="search" size={18} color="#fff" style={styles.findBtnIcon} />
-        <Text style={styles.findBtnText}>Find Driver</Text>
-      </TouchableOpacity>
-
-      <View style={styles.noteBox}>
-        <Text style={styles.noteText}>
-          Note: location suggestions require a Google Maps Places API key. Set
-          GOOGLE_MAPS_API_KEY in your environment or replace the placeholder in
-          this file for local testing. Driver matching is not implemented yet.
-        </Text>
-      </View>
-
-      {/* Bottom navigation bar (Home / Profile / Sign Out) */}
-      <View style={styles.bottomBarContainer}>
-        <View style={styles.bottomBar}>
-          <TouchableOpacity
-            style={styles.bottomButton}
-            onPress={() => _navigation.navigate('Home')}
-            accessibilityLabel="Home"
-          >
-            <MaterialIcons name="home" size={18} color="#fa9907ff" />
-            <Text style={styles.bottomLabel}>Home</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.bottomButton}
-            onPress={() => _navigation.navigate('Settings')}
-            accessibilityLabel="Profile"
-          >
-            <MaterialIcons name="person" size={18} color="#fa9907ff" />
-            <Text style={styles.bottomLabel}>Profile</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.bottomButton}
-            onPress={signOut}
-            accessibilityLabel="Sign out"
-          >
-            <MaterialIcons name="logout" size={18} color="#fa9907ff" />
-            <Text style={styles.bottomLabel}>Sign Out</Text>
-          </TouchableOpacity>
+          ))}
         </View>
+
+        {distance > 0 && (
+          <View style={styles.fareBox}>
+            <Text style={styles.distanceText}>
+              Distance: {distance.toFixed(2)} km
+            </Text>
+            <Text style={styles.priceText}>
+              Estimated Fare: ₦{price.toFixed(0)}
+            </Text>
+          </View>
+        )}
+
+        <TouchableOpacity style={styles.button}>
+          <Text style={styles.buttonText}>Find Driver</Text>
+        </TouchableOpacity>
       </View>
+
+      {loadingLocation && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#000" />
+        </View>
+      )}
     </View>
   );
 };
 
+export default BookingScreen;
+
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: '#fff' },
-  title: { fontSize: 22, fontWeight: '700', marginBottom: 12 },
-  label: { marginTop: 12, marginBottom: 6, fontWeight: '600' },
+  container: { flex: 1 },
+  map: { height: height * 0.55 },
+  bottomCard: {
+    position: 'absolute',
+    bottom: 0,
+    width: '100%',
+    backgroundColor: '#fff',
+    padding: 20,
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 25,
+    elevation: 10,
+  },
+  title: { fontSize: 20, fontWeight: 'bold', marginBottom: 10 },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    padding: 10,
-    borderRadius: 8,
-  },
-  suggestions: { maxHeight: 160, marginTop: 6, marginBottom: 6 },
-  suggestionItem: { padding: 10, borderBottomWidth: 1, borderColor: '#eee' },
-  findBtn: {
-    marginTop: 20,
-    backgroundColor: '#fa9907ff',
+    borderColor: '#eee',
+    borderRadius: 12,
     padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
+    marginBottom: 10,
   },
-  findBtnText: { color: '#fff', fontWeight: '600' },
-  noteBox: { marginTop: 20, padding: 10, backgroundColor: '#f9f9f9', borderRadius: 6 },
-  noteText: { color: '#555', fontSize: 12 },
-  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  errorTitle: { fontSize: 18, fontWeight: '600', marginBottom: 8 },
-  errorText: { textAlign: 'center', color: '#444' },
-  inputRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  inputIcon: { marginRight: 8 },
-  inputFlex: {
-    flex: 1,
+  suggestionsList: {
+    maxHeight: 100,
+    backgroundColor: '#fff',
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#ddd',
-    padding: 10,
+    borderColor: '#eee',
     borderRadius: 8,
   },
-  findBtnIcon: { marginRight: 8 },
-  bottomBarContainer: { position: 'absolute', bottom: 16, width: '90%', alignSelf: 'center' },
-  bottomBar: {
+  suggestionItem: {
+    padding: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  rideTypeContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255,255,255,0.95)',
-    padding: 8,
+    marginBottom: 15,
+  },
+  rideTypeOption: {
+    flex: 1,
+    alignItems: 'center',
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    marginHorizontal: 4,
+    backgroundColor: '#fff',
+  },
+  selectedRideType: {
+    backgroundColor: '#fa9907',
+    borderColor: '#fa9907',
+  },
+  rideTypeText: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#333',
+  },
+  selectedRideTypeText: {
+    color: '#fff',
+  },
+  fareBox: {
+    backgroundColor: '#f7f7f7',
+    padding: 12,
     borderRadius: 12,
-    width: '100%',
+    marginBottom: 10,
+  },
+  distanceText: { fontSize: 14 },
+  priceText: { fontSize: 18, fontWeight: 'bold', marginTop: 4 },
+  button: {
+    backgroundColor: '#fa9907',
+    padding: 15,
+    borderRadius: 12,
     alignItems: 'center',
   },
-  bottomButton: { flex: 1, alignItems: 'center', paddingVertical: 6 },
-  bottomLabel: { fontSize: 12, marginTop: 4 },
+  buttonText: { color: '#fff', fontWeight: 'bold' },
+  loadingOverlay: {
+    position: 'absolute',
+    top: '50%',
+    alignSelf: 'center',
+  },
 });
-
-// (Wrapped with ErrorBoundary at the bottom)
-
-// Small error boundary to catch render/runtime errors inside the Booking screen
-// and display a friendly message instead of allowing the native app to close.
-class ErrorBoundary extends React.Component<any, { hasError: boolean; error?: any }> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(error: any) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: any, info: any) {
-    // Log to console — in real app send to error tracking (Sentry, etc.)
-    console.warn('Booking screen error:', error, info);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorTitle}>Something went wrong</Text>
-          <Text style={styles.errorText}>{String(this.state.error)}</Text>
-        </View>
-      );
-    }
-    // @ts-ignore
-    return this.props.children;
-  }
-}
-
-export default (props: any) => (
-  <ErrorBoundary>
-    <BookingScreen {...props} />
-  </ErrorBoundary>
-);

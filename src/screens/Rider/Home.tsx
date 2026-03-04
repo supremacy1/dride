@@ -2,10 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
 // import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
-
+// import MapView, { Marker } from "react-native-maps";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
-import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE, Marker  } from 'react-native-maps';
 // import { MaterialIcons } from '@expo/vector-icons';
 
 const HomeScreen = ({ navigation }: { navigation: any }) => {
@@ -28,15 +28,23 @@ const HomeScreen = ({ navigation }: { navigation: any }) => {
       <MapView
         provider={PROVIDER_GOOGLE}
         style={styles.map}
-        initialRegion={{
-          latitude: 37.78825,
-          longitude: -122.4324,
-          latitudeDelta: 0.0922,
-          longitudeDelta: 0.0421,
+       initialRegion={{
+    latitude: 4.8156,
+    longitude: 7.0498,
+    latitudeDelta: 0.05,
+    longitudeDelta: 0.05,
         }}
         showsUserLocation
         showsMyLocationButton
       />
+       <Marker
+          coordinate={{
+            latitude: 4.8156,
+            longitude: 7.0498,
+          }}
+          title="Delight S.K Company Limited"
+          description="Our Office Location"
+        />
       {/* Top-left hamburger to open/close a simple review/menu panel */}
       <TouchableOpacity
         style={[styles.hamburger, { top: insets.top + 8 }]}
