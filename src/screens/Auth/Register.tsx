@@ -10,15 +10,10 @@ import {
 } from 'react-native';
 import Input from '../../components/Input';
 import Button from '../../components/Button';
-
-//const API_URL = 'http://localhost:3001'; // Use your server's IP in production/testing on device
-// For Android emulator use 10.0.2.2:3001 (or 10.0.3.2 for Genymotion).
-// Remove trailing slash to avoid accidental double-slash in requests.
-// Use your machine's IP address (confirmed reachable in browser)
-// const API_URL = 'http://192.168.166.186:3001';
-const API_URL = 'http://192.168.1.103:3001';
+import { API_URL } from '../../config/api';
 
 const RegisterScreen = ({ navigation }: { navigation: any }) => {
+  const [registerAs, setRegisterAs] = useState<'user' | 'driver'>('user');
   const [fullname, setFullname] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -108,6 +103,25 @@ const RegisterScreen = ({ navigation }: { navigation: any }) => {
           />
         </View>
         <Text style={styles.title}>Create an Account</Text>
+        <View style={styles.roleSelector}>
+          <TouchableOpacity
+            style={[styles.roleButton, registerAs === 'user' && styles.roleButtonActive]}
+            onPress={() => setRegisterAs('user')}>
+            <Text style={[styles.roleButtonText, registerAs === 'user' && styles.roleButtonTextActive]}>
+              User
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.roleButton, registerAs === 'driver' && styles.roleButtonActive]}
+            onPress={() => {
+              setRegisterAs('driver');
+              navigation.navigate('RegisterDriver');
+            }}>
+            <Text style={[styles.roleButtonText, registerAs === 'driver' && styles.roleButtonTextActive]}>
+              Driver
+            </Text>
+          </TouchableOpacity>
+        </View>
         <Input
           placeholder="Full Name"
           value={fullname}
@@ -198,6 +212,31 @@ const styles = StyleSheet.create({
   modalButtonText: { color: '#007AFF', fontWeight: '600' },
   backButton: { marginTop: 16 },
   backButtonText: { color: '#007AFF', textAlign: 'center', fontSize: 16 },
+  roleSelector: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  roleButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  roleButtonActive: {
+    backgroundColor: '#007AFF',
+  },
+  roleButtonText: {
+    color: '#007AFF',
+    fontWeight: '600',
+  },
+  roleButtonTextActive: {
+    color: '#fff',
+  },
 });
 
 export default RegisterScreen;

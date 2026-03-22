@@ -11,19 +11,18 @@ import {
 import Input from '../../components/Input';
 import Button from '../../components/Button';
 import { useAuth } from '../../context/AuthContext';
-
-//const API_URL = 'http://localhost:3001'; // Use your server's IP for device testing
-// const API_URL = 'http://192.168.1.101'; // Use your server's IP for device testing
-// For Android emulator use 10.0.2.2:3001 (or 10.0.3.2 for Genymotion).
-// Use your machine's IP address (confirmed reachable in browser)
-const API_URL = 'http://192.168.1.102:3001';
+import { API_URL } from '../../config/api';
 
 const LoginScreen = ({ navigation }: { navigation: any }) => {
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginAs, setLoginAs] = useState<'user' | 'driver'>('user');
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [modalTitle, setModalTitle] = useState('');
   const [modalMessage, setModalMessage] = useState('');
+  const [forgotPasswordVisible, setForgotPasswordVisible] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
   const [modalActions, setModalActions] = useState<{ text: string; onPress?: () => void }[]>([
     { text: 'OK' },
   ]);
@@ -42,11 +41,29 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
 
   
   const handleLogin = async () => {
-    // Check with server whether this email is registered. If registered -> sign in.
+    if (!email) {
+      showModal('Error', 'Please enter your email address.');
+      return;
+    }
+
     setLoading(true);
-    const url = `${API_URL}/api/auth/login`;
-    const payload = { email };
-    console.log('Login: POST', url, payload);
+    let url = '';
+    let payload: any = {};
+
+    if (loginAs === 'user') {
+      url = `${API_URL}/api/auth/login`;
+      payload = { email };
+    } else {
+      if (!password) {
+        setLoading(false);
+        showModal('Error', 'Please enter your password.');
+        return;
+      }
+      url = `${API_URL}/api/auth/login-driver`;
+      payload = { email, password };
+    }
+
+    console.log(`Login as ${loginAs}: POST`, url);
 
     try {
       const response = await fetch(url, {
@@ -55,61 +72,63 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
         body: JSON.stringify(payload),
       });
 
-      // If server says not found (404) or returns non-ok without a user, prompt to register.
+      const data = await response.json();
+
       if (!response.ok) {
         if (response.status === 404) {
+          const notFoundMessage =
+            loginAs === 'user'
+              ? 'That email address is not registered. Please register first.'
+              : 'No driver account found with that email.';
           showModal(
-            'Email Not Registered',
-            'That email address is not registered. Please register first to continue.',
-            [
-              { text: 'Register', onPress: () => navigation.navigate('Register') },
-              { text: 'OK' },
-            ]
+            'Account Not Found',
+            data.message || notFoundMessage,
+            loginAs === 'user'
+              ? [{ text: 'Register', onPress: () => navigation.navigate('Register') }, { text: 'OK' }]
+              : [{ text: 'OK' }]
           );
           return;
         }
-
-        // other server error
-        let errData: any = {};
-        try {
-          errData = await response.json();
-        } catch {}
-        showModal('Login Failed', errData.message || 'Server error during login.');
+        // For other errors like 401 (invalid password) or 403 (pending approval)
+        showModal('Login Failed', data.message || 'An error occurred.');
         return;
       }
 
-      // Parse user data and ensure a user object exists
-      let data: any = {};
-      try {
-        data = await response.json();
-      } catch (e) {
-        console.warn('Login: failed to parse JSON response', e);
-      }
-
-      const userData = data && (data.user || data);
-      if (!userData || !(userData.id || userData.email)) {
-        // Treat as not registered
-        showModal(
-          'Email Not Registered',
-          'That email address is not registered. Please register first to continue.',
-          [
-            { text: 'Register', onPress: () => navigation.navigate('Register') },
-            { text: 'OK' },
-          ]
-        );
+      const userData = data?.user;
+      if (!userData || !userData.id) {
+        showModal('Login Failed', 'Received invalid user data from server.');
         return;
       }
 
-      // Verified: email is registered. Sign in and let the Auth context / navigator
-      // switch stacks. Do not manually navigate to 'Booking' from the Auth stack
-      // because that screen lives in the Rider stack and the current navigator
-      // doesn't expose it (causes a 'not handled by any navigator' warning).
-      console.log('Login: signing in with', userData);
-      signIn(userData);
+      console.log(`Login as ${loginAs} successful:`, userData);
+      // Add role to the user object so the app context knows who is logged in
+      signIn({ ...userData, role: loginAs });
     } catch (error: any) {
       console.error('Login request error:', error);
-      // keep a modal for network errors so user sees them
       showModal('Login Failed', `${error.message || JSON.stringify(error)}\n\nTried URL: ${url}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!resetEmail) {
+      showModal('Error', 'Please enter your email address.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/auth/forgot-password-driver`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail }),
+      });
+      const data = await response.json();
+      setForgotPasswordVisible(false);
+      setResetEmail('');
+      showModal('Request Sent', data.message || 'If an account exists, an email has been sent.');
+    } catch (error) {
+      showModal('Error', 'Failed to send request. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -126,8 +145,26 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
   />
 </View>
         <Text style={styles.title}>Welcome Back!</Text>
+        <View style={styles.roleSelector}>
+          <TouchableOpacity
+            style={[styles.roleButton, loginAs === 'user' && styles.roleButtonActive]}
+            onPress={() => setLoginAs('user')}>
+            <Text style={[styles.roleButtonText, loginAs === 'user' && styles.roleButtonTextActive]}>
+              User
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.roleButton, loginAs === 'driver' && styles.roleButtonActive]}
+            onPress={() => setLoginAs('driver')}>
+            <Text style={[styles.roleButtonText, loginAs === 'driver' && styles.roleButtonTextActive]}>
+              Driver
+            </Text>
+          </TouchableOpacity>
+        </View>
         <Text style={styles.subtitle}>
-          Enter your email to log in and book a ride.
+          {loginAs === 'user'
+            ? 'Enter your email to log in and book a ride.'
+            : 'Enter your driver credentials to log in.'}
         </Text>
         <Input
           placeholder="Email Address"
@@ -136,16 +173,32 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
           keyboardType="email-address"
           autoCapitalize="none"
         />
+        {loginAs === 'driver' && (
+          <View>
+            <Input
+              placeholder="Password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+            />
+            <TouchableOpacity
+              style={styles.forgotPasswordButton}
+              onPress={() => setForgotPasswordVisible(true)}
+            >
+              <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+            </TouchableOpacity>
+          </View>
+        )}
         <Button
           title={loading ? 'Logging In...' : 'Login'}
       onPress={handleLogin}
           disabled={loading}
         />
         <TouchableOpacity
-          onPress={() => navigation.navigate('Register')}
+          onPress={() => navigation.navigate(loginAs === 'user' ? 'Register' : 'RegisterDriver')}
           style={styles.linkButton}
         >
-          <Text style={styles.linkText}>Don't have an account? Register</Text>
+          <Text style={styles.linkText}>{loginAs === 'user' ? "Don't have an account? Register" : "Apply to be a Driver"}</Text>
         </TouchableOpacity>
         <Modal transparent visible={modalVisible} animationType="fade">
           <View style={styles.modalOverlay}>
@@ -165,6 +218,31 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
                     <Text style={styles.modalButtonText}>{a.text}</Text>
                   </TouchableOpacity>
                 ))}
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Forgot Password Modal */}
+        <Modal transparent visible={forgotPasswordVisible} animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>Reset Password</Text>
+              <Text style={styles.modalMessage}>Enter your email address to receive a password reset link.</Text>
+              <Input
+                placeholder="Email Address"
+                value={resetEmail}
+                onChangeText={setResetEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+              <View style={styles.modalActions}>
+                 <TouchableOpacity style={styles.modalButton} onPress={() => setForgotPasswordVisible(false)}>
+                  <Text style={[styles.modalButtonText, { color: '#666' }]}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.modalButton} onPress={handleForgotPassword}>
+                  <Text style={styles.modalButtonText}>Send</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -197,6 +275,37 @@ const styles = StyleSheet.create({
   linkButton: { marginTop: 16 },
   linkText: { color: '#007AFF', textAlign: 'center', fontSize: 16 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    marginBottom: 15,
+    marginTop: -10,
+  },
+  forgotPasswordText: { color: '#007AFF', fontSize: 14, fontWeight: '500' },
+  roleSelector: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  roleButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  roleButtonActive: {
+    backgroundColor: '#007AFF',
+  },
+  roleButtonText: {
+    color: '#007AFF',
+    fontWeight: '600',
+  },
+  roleButtonTextActive: {
+    color: '#fff',
+  },
   modalBox: { width: '85%', backgroundColor: '#fff', padding: 16, borderRadius: 8 },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   modalMessage: { fontSize: 14, color: '#333', marginBottom: 12 },

@@ -17,8 +17,11 @@ import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions';
 import Geolocation from '@react-native-community/geolocation';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
+import { useAuth } from '../../context/AuthContext';
+import { useNavigation } from '@react-navigation/native';
 
 const GOOGLE_API_KEY = 'AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ';
+const API_URL = 'http://192.168.1.102:3001'; // Taken from Login.tsx. Ensure this is your correct server IP.
 
 const { height } = Dimensions.get('window');
 
@@ -26,7 +29,6 @@ const RIDE_TYPES = [
   { id: 'bike', label: 'Bike', multiplier: 0.7, icon: 'two-wheeler' },
   { id: 'standard', label: 'Standard', multiplier: 1, icon: 'directions-car' },
   { id: 'xl', label: 'XL', multiplier: 1.5, icon: 'airport-shuttle' },
-  
 ];
 
 const BookingScreen = () => {
@@ -38,10 +40,14 @@ const BookingScreen = () => {
   const [distance, setDistance] = useState(0);
   const [price, setPrice] = useState(0);
   const [loadingLocation, setLoadingLocation] = useState(false);
+  const [isFindingDriver, setIsFindingDriver] = useState(false);
 
   const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState<any[]>([]);
   const [selectedRideType, setSelectedRideType] = useState('standard');
+
+  const { user } = useAuth();
+  const navigation = useNavigation<any>();
 
   // ============================
   // GET CURRENT LOCATION
@@ -143,7 +149,7 @@ const BookingScreen = () => {
         if (type === 'pickup') setPickupCoords(coords);
         else setDestinationCoords(coords);
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error fetching place details');
     }
   };
@@ -163,6 +169,70 @@ const BookingScreen = () => {
     const baseFare = 500; // ₦500 base
     const perKm = 250;    // ₦250 per km
     return (baseFare + km * perKm) * multiplier;
+  };
+
+  // ============================
+  // FIND DRIVER
+  // ============================
+  const handleFindDriver = async () => {
+    if (!pickupCoords || !destinationCoords) {
+      Alert.alert('Missing Location', 'Please select both pickup and destination.');
+      return;
+    }
+    if (!user) {
+      Alert.alert('Not Logged In', 'You need to be logged in to book a ride.');
+      return;
+    }
+
+    setIsFindingDriver(true);
+
+    const rideDetails = {
+      riderId: user.id,
+      pickupAddress: pickup,
+      destinationAddress: destination,
+      pickupLocation: {
+        type: 'Point',
+        coordinates: [pickupCoords.longitude, pickupCoords.latitude],
+      },
+      destinationLocation: {
+        type: 'Point',
+        coordinates: [destinationCoords.longitude, destinationCoords.latitude],
+      },
+      rideType: selectedRideType,
+      estimatedFare: price,
+      distance,
+      status: 'REQUESTED',
+    };
+
+    try {
+      // This endpoint is an assumption. Replace with your actual backend endpoint.
+      const response = await fetch(`${API_URL}/api/rides/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // 'Authorization': `Bearer ${user.token}`, // Add if your API uses token auth
+        },
+        body: JSON.stringify(rideDetails),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to request ride. No drivers might be available.');
+      }
+
+      Alert.alert(
+        'Request Sent',
+        'Searching for a driver near you. You will be notified shortly.',
+        [
+          { text: 'OK', onPress: () => navigation.navigate('Home') }, // Navigate home or to a tracking screen
+        ]
+      );
+    } catch (error: any) {
+      Alert.alert('Request Error', error.message || 'Could not find a driver. Please try again later.');
+    } finally {
+      setIsFindingDriver(false);
+    }
   };
 
   return (
@@ -287,8 +357,16 @@ const BookingScreen = () => {
           </View>
         )}
 
-        <TouchableOpacity style={styles.button}>
-          <Text style={styles.buttonText}>Find Driver</Text>
+        <TouchableOpacity
+          style={[styles.button, (isFindingDriver || !pickupCoords || !destinationCoords) && styles.buttonDisabled]}
+          onPress={handleFindDriver}
+          disabled={isFindingDriver || !pickupCoords || !destinationCoords}
+        >
+          {isFindingDriver ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Find Driver</Text>
+          )}
         </TouchableOpacity>
       </View>
 
@@ -379,7 +457,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
   },
-  buttonText: { color: '#fff', fontWeight: 'bold' },
+  buttonDisabled: {
+    backgroundColor: '#fccb7c',
+  },
+  buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   loadingOverlay: {
     position: 'absolute',
     top: '50%',
