@@ -64,6 +64,33 @@ const Slideshow = ({ images, style }: { images: string[]; style?: any }) => {
 };
 
 const LandingScreen = ({ navigation }: { navigation: any }) => {
+  const [isLoading, setIsLoading] = React.useState(true);
+  const fadeAnim = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 5000,
+      useNativeDriver: true,
+    }).start();
+
+    const timer = setTimeout(() => {
+      setIsLoading(false);
+    }, 5000);
+
+    return () => clearTimeout(timer);
+  }, [fadeAnim]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.splashContainer}>
+        <Animated.Text style={[styles.splashText, { opacity: fadeAnim }]}>
+          D-Ride
+        </Animated.Text>
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -84,7 +111,7 @@ const LandingScreen = ({ navigation }: { navigation: any }) => {
           <Text style={styles.brand}>D-Ride</Text>
         </View>
       </View>
-      
+
       <View style={styles.hero}>
         {/* local hero background image and overlay */}
         {/* <Image source={require('../../assets/dride.jpg')} style={styles.heroBackground} /> */}
@@ -208,11 +235,26 @@ const styles = StyleSheet.create({
   slideshowImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   features: { padding: 20, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
   feature: { marginBottom: 14 },
-  featureTitle: { fontSize: 16, fontWeight: '700' ,color:'#FF4D00'},
+  featureTitle: { fontSize: 16, fontWeight: '700', color: '#FF4D00' },
   featureSubtitle: { fontSize: 13, color: '#666' },
   footer: { padding: 20, borderTopWidth: 1, borderTopColor: '#f8f8f8' },
   linkButton: { paddingVertical: 10 },
   linkText: { color: '#007AFF', textAlign: 'center' },
+  splashContainer: {
+    flex: 1,
+    backgroundColor: '#021529',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  splashText: {
+    fontSize: 90,
+    fontFamily: 'Poppins-Bold',
+    fontWeight: 'bold',
+    color: '#fff',
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 7, height: 7 },
+    textShadowRadius: 5,
+  },
 });
 
 export default LandingScreen;

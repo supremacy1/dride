@@ -12,6 +12,7 @@ import {
   Platform,
   Dimensions,
   Keyboard,
+  Image,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions';
@@ -26,9 +27,9 @@ const API_URL = 'http://192.168.1.102:3001'; // Taken from Login.tsx. Ensure thi
 const { height } = Dimensions.get('window');
 
 const RIDE_TYPES = [
-  { id: 'bike', label: 'Bike', multiplier: 0.7, icon: 'two-wheeler' },
-  { id: 'standard', label: 'Standard', multiplier: 1, icon: 'directions-car' },
-  { id: 'xl', label: 'XL', multiplier: 1.5, icon: 'airport-shuttle' },
+  { id: 'bike', label: 'Bike', multiplier: 0.7, image: require('../../assets/bike1.jpg') },
+  { id: 'standard', label: 'Standard', multiplier: 1, image: require('../../assets/car1.jpg') },
+  { id: 'xl', label: 'XL', multiplier: 1.5, image: require('../../assets/car2.jpg') },
 ];
 
 const BookingScreen = () => {
@@ -329,11 +330,7 @@ const BookingScreen = () => {
               ]}
               onPress={() => setSelectedRideType(type.id)}
             >
-              <MaterialIcons
-                name={type.icon}
-                size={24}
-                color={selectedRideType === type.id ? '#fff' : '#333'}
-              />
+              <Image source={type.image} style={styles.rideTypeImage} />
               <Text
                 style={[
                   styles.rideTypeText,
@@ -431,8 +428,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   selectedRideType: {
-    backgroundColor: '#fa9907',
+    backgroundColor: '#fdfcfa',
     borderColor: '#fa9907',
+    borderWidth: 2,
+  },
+  rideTypeImage: {
+    width: 60,
+    height: 60,
+    resizeMode: 'contain',
   },
   rideTypeText: {
     marginTop: 4,
@@ -441,7 +444,8 @@ const styles = StyleSheet.create({
     color: '#333',
   },
   selectedRideTypeText: {
-    color: '#fff',
+    color: '#0e0d0d',
+    fontWeight: 'bold',
   },
   fareBox: {
     backgroundColor: '#f7f7f7',
