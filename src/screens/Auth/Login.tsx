@@ -1,45 +1,48 @@
-import React, { useState } from 'react';
+import React, {useState} from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
+  Image,
   Modal,
   SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
   TouchableOpacity,
-  Image,
+  View,
 } from 'react-native';
+import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
 import Input from '../../components/Input';
 import Button from '../../components/Button';
-import { useAuth } from '../../context/AuthContext';
-import { API_URL } from '../../config/api';
+import {useAuth} from '../../context/AuthContext';
+import {API_URL} from '../../config/api';
 
-const LoginScreen = ({ navigation }: { navigation: any }) => {
+const LoginScreen = ({navigation}: {navigation: any}) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginAs, setLoginAs] = useState<'user' | 'driver'>('user');
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [modalTitle, setModalTitle] = useState('');
   const [modalMessage, setModalMessage] = useState('');
   const [forgotPasswordVisible, setForgotPasswordVisible] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
-  const [modalActions, setModalActions] = useState<{ text: string; onPress?: () => void }[]>([
-    { text: 'OK' },
-  ]);
+  const [modalActions, setModalActions] = useState<
+    {text: string; onPress?: () => void}[]
+  >([{text: 'OK'}]);
 
   const showModal = (
     title: string,
     message: string,
-    actions: { text: string; onPress?: () => void }[] = [{ text: 'OK' }]
+    actions: {text: string; onPress?: () => void}[] = [{text: 'OK'}],
   ) => {
     setModalTitle(title);
     setModalMessage(message);
     setModalActions(actions);
     setModalVisible(true);
   };
-  const { signIn } = useAuth();
 
-  
+  const {signIn} = useAuth();
+
   const handleLogin = async () => {
     if (!email) {
       showModal('Error', 'Please enter your email address.');
@@ -52,7 +55,7 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
 
     if (loginAs === 'user') {
       url = `${API_URL}/api/auth/login`;
-      payload = { email };
+      payload = {email};
     } else {
       if (!password) {
         setLoading(false);
@@ -60,15 +63,13 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
         return;
       }
       url = `${API_URL}/api/auth/login-driver`;
-      payload = { email, password };
+      payload = {email, password};
     }
-
-    console.log(`Login as ${loginAs}: POST`, url);
 
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
       });
 
@@ -84,12 +85,15 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
             'Account Not Found',
             data.message || notFoundMessage,
             loginAs === 'user'
-              ? [{ text: 'Register', onPress: () => navigation.navigate('Register') }, { text: 'OK' }]
-              : [{ text: 'OK' }]
+              ? [
+                  {text: 'Register', onPress: () => navigation.navigate('Register')},
+                  {text: 'OK'},
+                ]
+              : [{text: 'OK'}],
           );
           return;
         }
-        // For other errors like 401 (invalid password) or 403 (pending approval)
+
         showModal('Login Failed', data.message || 'An error occurred.');
         return;
       }
@@ -100,11 +104,8 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
         return;
       }
 
-      console.log(`Login as ${loginAs} successful:`, userData);
-      // Add role to the user object so the app context knows who is logged in
-      signIn({ ...userData, role: loginAs });
+      signIn({...userData, userType: loginAs === 'user' ? 'rider' : 'driver'});
     } catch (error: any) {
-      console.error('Login request error:', error);
       showModal('Login Failed', `${error.message || JSON.stringify(error)}\n\nTried URL: ${url}`);
     } finally {
       setLoading(false);
@@ -120,14 +121,14 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
     try {
       const response = await fetch(`${API_URL}/api/auth/forgot-password-driver`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: resetEmail }),
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: resetEmail}),
       });
       const data = await response.json();
       setForgotPasswordVisible(false);
       setResetEmail('');
       showModal('Request Sent', data.message || 'If an account exists, an email has been sent.');
-    } catch (error) {
+    } catch {
       showModal('Error', 'Failed to send request. Please try again.');
     } finally {
       setLoading(false);
@@ -136,70 +137,111 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-       <View style={styles.headerImg}>
-  <Image 
-    source={require('../../assets/3636253.jpg')} 
-    style={styles.loginImage} 
-    resizeMode="contain"
-  />
-</View>
-        <Text style={styles.title}>Welcome Back!</Text>
-        <View style={styles.roleSelector}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}>
+        <View style={styles.hero}>
+          <View style={styles.heroGlowLarge} />
+          <View style={styles.heroGlowSmall} />
+          <View style={styles.heroTopRow}>
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backPill}>
+              <MaterialIcons name="arrow-back" size={18} color="#7a3511" />
+              <Text style={styles.backPillText}>Back</Text>
+            </TouchableOpacity>
+            <View style={styles.heroBadge}>
+              <Text style={styles.heroBadgeText}>Secure sign in</Text>
+            </View>
+          </View>
+
+          <Image
+            source={require('../../assets/3636253.jpg')}
+            style={styles.loginImage}
+            resizeMode="contain"
+          />
+
+          <Text style={styles.title}>Welcome back</Text>
+          <Text style={styles.subtitle}>
+            Sign in with the same warm, simple ride experience you saw on the landing page.
+          </Text>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.roleSelector}>
+            <TouchableOpacity
+              style={[styles.roleButton, loginAs === 'user' && styles.roleButtonActive]}
+              onPress={() => setLoginAs('user')}>
+              <Text style={[styles.roleButtonText, loginAs === 'user' && styles.roleButtonTextActive]}>
+                User
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.roleButton, loginAs === 'driver' && styles.roleButtonActive]}
+              onPress={() => setLoginAs('driver')}>
+              <Text style={[styles.roleButtonText, loginAs === 'driver' && styles.roleButtonTextActive]}>
+                Driver
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.helperText}>
+            {loginAs === 'user'
+              ? 'Enter your email to continue booking your ride.'
+              : 'Use your approved driver credentials to continue.'}
+          </Text>
+
+          <Input
+            placeholder="Email Address"
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            style={styles.input}
+          />
+
+          {loginAs === 'driver' && (
+            <View>
+              <View style={styles.passwordContainer}>
+                <Input
+                  placeholder="Password"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry={!isPasswordVisible}
+                  style={styles.passwordInput}
+                />
+                <TouchableOpacity
+                  style={styles.eyeIcon}
+                  onPress={() => setIsPasswordVisible(!isPasswordVisible)}>
+                  <MaterialIcons
+                    name={isPasswordVisible ? 'visibility-off' : 'visibility'}
+                    size={22}
+                    color="#8a6856"
+                  />
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity
+                style={styles.forgotPasswordButton}
+                onPress={() => setForgotPasswordVisible(true)}>
+                <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <Button
+            title={loading ? 'Logging In...' : 'Login'}
+            onPress={handleLogin}
+            disabled={loading}
+            color="#f46f1f"
+          />
+
           <TouchableOpacity
-            style={[styles.roleButton, loginAs === 'user' && styles.roleButtonActive]}
-            onPress={() => setLoginAs('user')}>
-            <Text style={[styles.roleButtonText, loginAs === 'user' && styles.roleButtonTextActive]}>
-              User
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.roleButton, loginAs === 'driver' && styles.roleButtonActive]}
-            onPress={() => setLoginAs('driver')}>
-            <Text style={[styles.roleButtonText, loginAs === 'driver' && styles.roleButtonTextActive]}>
-              Driver
+            onPress={() => navigation.navigate(loginAs === 'user' ? 'Register' : 'RegisterDriver')}
+            style={styles.linkButton}>
+            <Text style={styles.linkText}>
+              {loginAs === 'user' ? "Don't have an account? Register" : 'Apply to be a Driver'}
             </Text>
           </TouchableOpacity>
         </View>
-        <Text style={styles.subtitle}>
-          {loginAs === 'user'
-            ? 'Enter your email to log in and book a ride.'
-            : 'Enter your driver credentials to log in.'}
-        </Text>
-        <Input
-          placeholder="Email Address"
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-        />
-        {loginAs === 'driver' && (
-          <View>
-            <Input
-              placeholder="Password"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-            />
-            <TouchableOpacity
-              style={styles.forgotPasswordButton}
-              onPress={() => setForgotPasswordVisible(true)}
-            >
-              <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-        <Button
-          title={loading ? 'Logging In...' : 'Login'}
-      onPress={handleLogin}
-          disabled={loading}
-        />
-        <TouchableOpacity
-          onPress={() => navigation.navigate(loginAs === 'user' ? 'Register' : 'RegisterDriver')}
-          style={styles.linkButton}
-        >
-          <Text style={styles.linkText}>{loginAs === 'user' ? "Don't have an account? Register" : "Apply to be a Driver"}</Text>
-        </TouchableOpacity>
+
         <Modal transparent visible={modalVisible} animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.modalBox}>
@@ -212,9 +254,10 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
                     style={styles.modalButton}
                     onPress={() => {
                       setModalVisible(false);
-                      if (a.onPress) a.onPress();
-                    }}
-                  >
+                      if (a.onPress) {
+                        a.onPress();
+                      }
+                    }}>
                     <Text style={styles.modalButtonText}>{a.text}</Text>
                   </TouchableOpacity>
                 ))}
@@ -223,22 +266,26 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
           </View>
         </Modal>
 
-        {/* Forgot Password Modal */}
         <Modal transparent visible={forgotPasswordVisible} animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.modalBox}>
               <Text style={styles.modalTitle}>Reset Password</Text>
-              <Text style={styles.modalMessage}>Enter your email address to receive a password reset link.</Text>
+              <Text style={styles.modalMessage}>
+                Enter your email address to receive a password reset link.
+              </Text>
               <Input
                 placeholder="Email Address"
                 value={resetEmail}
                 onChangeText={setResetEmail}
                 keyboardType="email-address"
                 autoCapitalize="none"
+                style={styles.input}
               />
               <View style={styles.modalActions}>
-                 <TouchableOpacity style={styles.modalButton} onPress={() => setForgotPasswordVisible(false)}>
-                  <Text style={[styles.modalButtonText, { color: '#666' }]}>Cancel</Text>
+                <TouchableOpacity
+                  style={styles.modalButton}
+                  onPress={() => setForgotPasswordVisible(false)}>
+                  <Text style={styles.modalCancelText}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.modalButton} onPress={handleForgotPassword}>
                   <Text style={styles.modalButtonText}>Send</Text>
@@ -247,71 +294,209 @@ const LoginScreen = ({ navigation }: { navigation: any }) => {
             </View>
           </View>
         </Modal>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  content: { flex: 1, justifyContent: 'center', padding: 20 },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 8,
+  container: {
+    flex: 1,
+    backgroundColor: '#f6efe8',
   },
-  loginImage:{
+  scrollContent: {
+    padding: 18,
+    paddingBottom: 32,
+  },
+  hero: {
+    backgroundColor: '#22130c',
+    borderRadius: 30,
+    padding: 22,
+    overflow: 'hidden',
+  },
+  heroGlowLarge: {
+    position: 'absolute',
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    top: -40,
+    right: -50,
+    backgroundColor: 'rgba(244,111,31,0.18)',
+  },
+  heroGlowSmall: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    bottom: 40,
+    left: -30,
+    backgroundColor: 'rgba(255,214,168,0.10)',
+  },
+  heroTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  backPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
+    backgroundColor: '#fff3ea',
+  },
+  backPillText: {
+    color: '#7a3511',
+    fontWeight: '700',
+  },
+  heroBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  heroBadgeText: {
+    color: '#f6d5c4',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  loginImage: {
     width: '100%',
-    height: 200,
-    marginBottom: 20,
+    height: 170,
+    marginBottom: 12,
+  },
+  title: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#fff8f2',
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: 16,
-    color: 'gray',
+    marginTop: 8,
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#e7c3b0',
     textAlign: 'center',
-    marginBottom: 24,
   },
-  linkButton: { marginTop: 16 },
-  linkText: { color: '#007AFF', textAlign: 'center', fontSize: 16 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  forgotPasswordButton: {
-    alignSelf: 'flex-end',
-    marginBottom: 15,
-    marginTop: -10,
+  card: {
+    marginTop: 18,
+    backgroundColor: '#fffaf6',
+    borderRadius: 28,
+    padding: 20,
+    shadowColor: '#412114',
+    shadowOffset: {width: 0, height: 10},
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 4,
   },
-  forgotPasswordText: { color: '#007AFF', fontSize: 14, fontWeight: '500' },
   roleSelector: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#007AFF',
-    borderRadius: 8,
-    overflow: 'hidden',
+    backgroundColor: '#fff1e7',
+    borderRadius: 18,
+    padding: 5,
   },
   roleButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: 'center',
-    backgroundColor: '#fff',
+    borderRadius: 14,
   },
   roleButtonActive: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#f46f1f',
   },
   roleButtonText: {
-    color: '#007AFF',
-    fontWeight: '600',
+    color: '#9b623f',
+    fontWeight: '700',
   },
   roleButtonTextActive: {
     color: '#fff',
   },
-  modalBox: { width: '85%', backgroundColor: '#fff', padding: 16, borderRadius: 8 },
-  modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
-  modalMessage: { fontSize: 14, color: '#333', marginBottom: 12 },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end' },
-  modalButton: { padding: 10, marginLeft: 8 },
-  modalButtonText: { color: '#007AFF', fontWeight: '600' },
+  helperText: {
+    marginTop: 16,
+    marginBottom: 6,
+    color: '#71584a',
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: 'center',
+  },
+  input: {
+    marginVertical: 8,
+  },
+  passwordContainer: {
+    position: 'relative',
+  },
+  passwordInput: {
+    paddingRight: 44,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 14,
+    top: 20,
+  },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    marginTop: 2,
+    marginBottom: 12,
+  },
+  forgotPasswordText: {
+    color: '#c45518',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  linkButton: {
+    marginTop: 10,
+  },
+  linkText: {
+    color: '#7a3511',
+    textAlign: 'center',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(20,10,6,0.48)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalBox: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#fffaf6',
+    padding: 18,
+    borderRadius: 24,
+  },
+  modalTitle: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#24140d',
+    marginBottom: 8,
+  },
+  modalMessage: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: '#71584a',
+    marginBottom: 12,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  modalButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginLeft: 8,
+  },
+  modalButtonText: {
+    color: '#c45518',
+    fontWeight: '800',
+  },
+  modalCancelText: {
+    color: '#8a6856',
+    fontWeight: '700',
+  },
 });
 
 export default LoginScreen;

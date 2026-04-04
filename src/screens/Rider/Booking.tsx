@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,23 +13,27 @@ import {
   Dimensions,
   Keyboard,
   Image,
+  Modal,
+  Linking,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions';
 import Geolocation from '@react-native-community/geolocation';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
 import { useAuth } from '../../context/AuthContext';
-import { useNavigation } from '@react-navigation/native';
+import { API_URL } from '../../config/api';
+import { io, Socket } from 'socket.io-client';
 
 const GOOGLE_API_KEY = 'AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ';
-const API_URL = 'http://192.168.1.102:3001'; // Taken from Login.tsx. Ensure this is your correct server IP.
+// const API_URL = 'http://192.168.43.211:3001'; // Taken from Login.tsx. Ensure this is your correct server IP.
 
 const { height } = Dimensions.get('window');
 
+
 const RIDE_TYPES = [
-  { id: 'bike', label: 'Bike', multiplier: 0.7, image: require('../../assets/bike1.jpg') },
+  { id: 'bike', label: 'Delivery', multiplier: 0.7, image: require('../../assets/db.jpg') },
   { id: 'standard', label: 'Standard', multiplier: 1, image: require('../../assets/car1.jpg') },
-  { id: 'xl', label: 'XL', multiplier: 1.5, image: require('../../assets/car2.jpg') },
+  { id: 'xl', label: 'Luxury', multiplier: 1.5, image: require('../../assets/car2.jpg') },
 ];
 
 const BookingScreen = () => {
@@ -46,9 +50,194 @@ const BookingScreen = () => {
   const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState<any[]>([]);
   const [selectedRideType, setSelectedRideType] = useState('standard');
+  const socketRef = useRef<Socket | null>(null);
+  const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
+  const [showDriversModal, setShowDriversModal] = useState(false);
+  const [nearbyDrivers, setNearbyDrivers] = useState<any[]>([]);
+  const [acceptedDriver, setAcceptedDriver] = useState<any>(null);
+  const [completedTrip, setCompletedTrip] = useState<any>(null);
+  const [rideStatus, setRideStatus] = useState<'idle' | 'pending' | 'accepted' | 'started' | 'completed' | 'cancelled'>('idle');
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const isFindingRef = useRef(false);
+  const findTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activeRequestIdRef = useRef<string | null>(null);
+  const acceptedRequestIdRef = useRef<string | null>(null);
+  const acceptedDriverRef = useRef<any>(null);
 
   const { user } = useAuth();
-  const navigation = useNavigation<any>();
+  const driverProfileImagePath = acceptedDriver?.profile_picture_url || acceptedDriver?.profile_picture || null;
+  const driverProfileImageUrl = driverProfileImagePath
+    ? `${API_URL}/${driverProfileImagePath
+        .replace(/\\/g, '/')
+        .replace(/^src\/screens\/Auth\//i, '')
+        .replace(/^public\//i, '')}`
+    : null;
+
+  const clearFindDriverTimeout = () => {
+    if (findTimeoutRef.current) {
+      clearTimeout(findTimeoutRef.current);
+      findTimeoutRef.current = null;
+    }
+  };
+
+  const handleCancelAcceptedRide = () => {
+    if (socketRef.current && acceptedDriver?.socketId) {
+      socketRef.current.emit('cancelRide', {
+        requestId: acceptedDriver.requestId || null,
+        driverId: acceptedDriver.id,
+        driverSocketId: acceptedDriver.socketId,
+        riderId: user?.id,
+        message: 'The rider cancelled this trip.',
+      });
+    }
+
+    clearFindDriverTimeout();
+    isFindingRef.current = false;
+    activeRequestIdRef.current = null;
+    acceptedRequestIdRef.current = null;
+    setAcceptedDriver(null);
+    setCompletedTrip(null);
+    setRideStatus('cancelled');
+    setShowCancelConfirmModal(false);
+  };
+
+  useEffect(() => {
+    acceptedRequestIdRef.current = acceptedDriver?.requestId ?? null;
+    acceptedDriverRef.current = acceptedDriver;
+  }, [acceptedDriver]);
+
+  // ============================
+  // INITIALIZE SOCKET
+  // ============================
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const newSocket = io(API_URL, {
+      transports: ['websocket'],
+      forceNew: false,
+    });
+    socketRef.current = newSocket;
+
+    newSocket.on('connect', () => {
+      setIsSocketConnected(true);
+      newSocket.emit('join', { userId: String(user.id), role: 'rider' });
+    });
+    newSocket.on('disconnect', () => setIsSocketConnected(false));
+
+    newSocket.on('rideAccepted', (payload: any) => {
+      const acceptedRequestId = payload?.requestId ?? null;
+      const driverData = payload?.driver ?? payload;
+
+      if (
+        acceptedRequestId &&
+        activeRequestIdRef.current &&
+        acceptedRequestId !== activeRequestIdRef.current
+      ) {
+        return;
+      }
+
+      clearFindDriverTimeout();
+      isFindingRef.current = false;
+      activeRequestIdRef.current = null;
+      setIsFindingDriver(false);
+      setAcceptedDriver(driverData);
+      setCompletedTrip(null);
+      setRideStatus('accepted');
+      acceptedRequestIdRef.current = driverData?.requestId ?? null;
+    });
+
+    newSocket.on('rideDriverLocation', (payload: any) => {
+      if (!payload?.requestId) return;
+
+      setAcceptedDriver((prev: any) => {
+        if (!prev || prev.requestId !== payload.requestId) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          current_lat: payload.latitude,
+          current_lng: payload.longitude,
+        };
+      });
+    });
+
+    newSocket.on('tripStarted', (payload: any) => {
+      if (acceptedRequestIdRef.current && payload?.requestId !== acceptedRequestIdRef.current) {
+        return;
+      }
+
+      setRideStatus('started');
+      Alert.alert('Trip Started', payload?.message || 'Your driver has started the trip.');
+    });
+
+    newSocket.on('tripEnded', (payload: any) => {
+      if (acceptedRequestIdRef.current && payload?.requestId !== acceptedRequestIdRef.current) {
+        return;
+      }
+
+      setRideStatus('completed');
+      setCompletedTrip({
+        driver: acceptedDriverRef.current,
+        fare: payload?.fare || 0,
+      });
+      Alert.alert(
+        'Trip Completed',
+        `Payment recorded: N${Number(payload?.fare || 0).toFixed(0)}`
+      );
+      acceptedRequestIdRef.current = null;
+      activeRequestIdRef.current = null;
+      setAcceptedDriver(null);
+    });
+
+    newSocket.on('rideCancelled', (payload: any) => {
+      if (acceptedRequestIdRef.current && payload?.requestId !== acceptedRequestIdRef.current) {
+        return;
+      }
+
+      setRideStatus('cancelled');
+      acceptedRequestIdRef.current = null;
+      activeRequestIdRef.current = null;
+      setAcceptedDriver(null);
+    });
+
+    newSocket.on('driverRideCancelled', (payload: any) => {
+      if (acceptedRequestIdRef.current && payload?.requestId !== acceptedRequestIdRef.current) {
+        return;
+      }
+
+      setRideStatus('cancelled');
+      acceptedRequestIdRef.current = null;
+      activeRequestIdRef.current = null;
+      setAcceptedDriver(null);
+      Alert.alert('Ride Cancelled', payload?.message || 'The driver cancelled this ride.');
+    });
+
+    newSocket.on('rideRequestFailed', (payload: any) => {
+      if (activeRequestIdRef.current && payload?.requestId !== activeRequestIdRef.current) {
+        return;
+      }
+
+      clearFindDriverTimeout();
+      isFindingRef.current = false;
+      activeRequestIdRef.current = null;
+      setIsFindingDriver(false);
+      setRideStatus('idle');
+      Alert.alert('Request Error', payload?.message || 'Could not create ride request.');
+    });
+
+    return () => {
+      clearFindDriverTimeout();
+      newSocket.off('rideDriverLocation');
+      newSocket.off('tripStarted');
+      newSocket.off('tripEnded');
+      newSocket.off('rideCancelled');
+      newSocket.off('driverRideCancelled');
+      newSocket.off('rideRequestFailed');
+      socketRef.current = null;
+      newSocket.disconnect();
+    };
+  }, [user?.id]);
 
   // ============================
   // GET CURRENT LOCATION
@@ -89,6 +278,34 @@ const BookingScreen = () => {
 
     requestLocation();
   }, []);
+
+  // ============================
+  // POLL FOR NEARBY DRIVERS
+  // ============================
+  useEffect(() => {
+    let interval: any;
+    const fetchNearby = async () => {
+      if (pickupCoords) {
+        try {
+          const response = await fetch(
+            `${API_URL}/api/driver/nearby?lat=${pickupCoords.latitude}&lng=${pickupCoords.longitude}&radius=10`
+          );
+          const data = await response.json();
+          if (response.ok && Array.isArray(data)) {
+            setNearbyDrivers(data);
+          }
+        } catch (error) {
+          console.warn('Error fetching nearby drivers', error);
+        }
+      }
+    };
+
+    if (pickupCoords && !acceptedDriver) { 
+      fetchNearby(); 
+      interval = setInterval(fetchNearby, 5000); // Poll every 5 seconds for smoother Bolt-like feel
+    }
+    return () => clearInterval(interval);
+  }, [pickupCoords, acceptedDriver]);
 
   // ============================
   // REVERSE GEOCODE
@@ -185,54 +402,54 @@ const BookingScreen = () => {
       return;
     }
 
-    setIsFindingDriver(true);
+    if (!isSocketConnected) {
+      Alert.alert('Connection Error', 'Reconnecting to server. Please try again in a moment.');
+      return;
+    }
 
-    const rideDetails = {
-      riderId: user.id,
-      pickupAddress: pickup,
-      destinationAddress: destination,
-      pickupLocation: {
-        type: 'Point',
-        coordinates: [pickupCoords.longitude, pickupCoords.latitude],
-      },
-      destinationLocation: {
-        type: 'Point',
-        coordinates: [destinationCoords.longitude, destinationCoords.latitude],
-      },
-      rideType: selectedRideType,
-      estimatedFare: price,
-      distance,
-      status: 'REQUESTED',
-    };
+    setIsFindingDriver(true);
+    isFindingRef.current = true;
+    setAcceptedDriver(null);
+    setRideStatus('pending');
+    clearFindDriverTimeout();
+
+    const requestId = `ride-${user.id}-${Date.now()}`;
+    activeRequestIdRef.current = requestId;
 
     try {
-      // This endpoint is an assumption. Replace with your actual backend endpoint.
-      const response = await fetch(`${API_URL}/api/rides/request`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // 'Authorization': `Bearer ${user.token}`, // Add if your API uses token auth
-        },
-        body: JSON.stringify(rideDetails),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to request ride. No drivers might be available.');
+      // Step 2: Still broadcast the request via Socket for real-time acceptance
+      if (socketRef.current) {
+        socketRef.current.emit('requestRide', {
+          requestId,
+          riderId: user.id,
+          riderSocketId: socketRef.current.id,
+          pickupAddress: pickup,
+          destinationAddress: destination,
+          pickupCoords,
+          destinationCoords,
+          rideType: selectedRideType,
+          estimatedFare: price,
+          distance,
+        });
       }
 
-      Alert.alert(
-        'Request Sent',
-        'Searching for a driver near you. You will be notified shortly.',
-        [
-          { text: 'OK', onPress: () => navigation.navigate('Home') }, // Navigate home or to a tracking screen
-        ]
-      );
-    } catch (error: any) {
-      Alert.alert('Request Error', error.message || 'Could not find a driver. Please try again later.');
-    } finally {
+      // Step 3: Wait for a driver to accept. Clear this if driver accepts earlier.
+      findTimeoutRef.current = setTimeout(() => {
+        if (isFindingRef.current && activeRequestIdRef.current === requestId) {
+          setIsFindingDriver(false);
+          isFindingRef.current = false;
+          activeRequestIdRef.current = null;
+          Alert.alert('No Driver Found', 'No driver accepted your request. Try again later.');
+          setRideStatus('idle');
+        }
+      }, 30000);
+    } catch {
+      clearFindDriverTimeout();
       setIsFindingDriver(false);
+      isFindingRef.current = false;
+      activeRequestIdRef.current = null;
+      setRideStatus('idle');
+      Alert.alert('Request Error', 'Could not search for drivers. Please try again.');
     }
   };
 
@@ -245,6 +462,21 @@ const BookingScreen = () => {
           initialRegion={region}
         >
           {pickupCoords && <Marker coordinate={pickupCoords} title="Pickup" />}
+
+          {/* Nearby Drivers Markers - Explicitly parsing strings to numbers */}
+          {!acceptedDriver && nearbyDrivers.map((driver) => (
+            <Marker
+              key={driver.id}
+              coordinate={{
+                latitude: Number(driver.current_lat),
+                longitude: Number(driver.current_lng),
+              }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              title={driver.fullname}
+            >
+              <MaterialIcons name="directions-car" size={30} color="#fa9907" />
+            </Marker>
+          ))}
 
           {destinationCoords && (
             <Marker coordinate={destinationCoords} title="Destination" />
@@ -265,8 +497,70 @@ const BookingScreen = () => {
         </MapView>
       )}
 
-      {/* Bottom Card */}
-      <View style={styles.bottomCard}>
+      {/* Accepted Driver UI */}
+      {acceptedDriver ? (
+        <View style={styles.acceptedDriverCard}>
+          <View style={styles.driverHeader}>
+            {driverProfileImageUrl ? (
+              <Image source={{ uri: driverProfileImageUrl }} style={styles.driverAvatar} />
+            ) : (
+              <View style={styles.driverAvatarFallback}>
+                <MaterialIcons name="person" size={34} color="#ccc" />
+              </View>
+            )}
+            <View style={styles.driverInfoContainer}>
+              <Text style={styles.acceptedDriverName}>{acceptedDriver.fullname}</Text>
+              <Text style={styles.driverCarInfo}>
+                {acceptedDriver.car_model} • {acceptedDriver.car_plate} . {acceptedDriver.car_color} 
+              </Text>
+              <Text style={styles.driverPhoneText}>
+                Phone: {acceptedDriver.phone || 'Not available'}
+              </Text>
+              <Text style={styles.driverTripStatus}>
+                Status: {rideStatus === 'started' ? 'Trip started' : 'Driver assigned'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.callIcon}
+              onPress={() => Linking.openURL(`tel:${acceptedDriver.phone}`)}
+            >
+              <MaterialIcons name="phone" size={30} color="#fff" />
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={() => setShowCancelConfirmModal(true)}
+          >
+            <Text style={styles.cancelBtnText}>Cancel Ride</Text>
+          </TouchableOpacity>
+        </View>
+      ) : completedTrip && rideStatus === 'completed' ? (
+        <View style={styles.acceptedDriverCard}>
+          <View style={styles.driverHeader}>
+            <MaterialIcons name="check-circle" size={50} color="#1f8b4c" />
+            <View style={styles.driverInfoContainer}>
+              <Text style={styles.acceptedDriverName}>Trip Completed</Text>
+              <Text style={styles.driverCarInfo}>
+                Driver: {completedTrip.driver?.fullname || 'Assigned driver'}
+              </Text>
+              <Text style={styles.driverTripStatus}>
+                Payment recorded: N{Number(completedTrip.fare || 0).toFixed(0)}
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            style={styles.doneTripBtn}
+            onPress={() => {
+              setCompletedTrip(null);
+              setRideStatus('idle');
+            }}
+          >
+            <Text style={styles.doneTripBtnText}>Done</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        /* Bottom Selection Card */
+        <View style={styles.bottomCard}>
         <Text style={styles.title}>Book Ride</Text>
 
         <TextInput
@@ -365,13 +659,72 @@ const BookingScreen = () => {
             <Text style={styles.buttonText}>Find Driver</Text>
           )}
         </TouchableOpacity>
-      </View>
+        </View>
+      )}
 
       {loadingLocation && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#000" />
         </View>
       )}
+
+      <Modal visible={showDriversModal} animationType="slide" transparent={true}>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Nearby Drivers</Text>
+            <FlatList
+              data={nearbyDrivers}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={({ item }) => (
+                <View style={styles.driverItem}>
+                  <View style={styles.driverMeta}>
+                    <Text style={styles.driverName}>{item.fullname}</Text>
+                    <Text style={styles.driverCar}>{item.car_model} - {item.car_plate} - {item.car_color}</Text>
+                    <Text style={styles.driverDistance}>{item.distance.toFixed(2)} km away</Text>
+                  </View>
+                  <TouchableOpacity 
+                    style={styles.callButton}
+                    onPress={() => Linking.openURL(`tel:${item.phone}`)}
+                  >
+                    <MaterialIcons name="phone" size={24} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              )}
+            />
+            <TouchableOpacity 
+              style={styles.closeButton}
+              onPress={() => setShowDriversModal(false)}
+            >
+              <Text style={styles.closeButtonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showCancelConfirmModal} animationType="fade" transparent={true}>
+        <View style={styles.modalContainer}>
+          <View style={styles.cancelModalContent}>
+            <Text style={styles.modalTitle}>Cancel Ride?</Text>
+            <Text style={styles.cancelModalText}>
+              Are you sure you want to cancel this ride request?
+            </Text>
+            <View style={styles.cancelModalActions}>
+              <TouchableOpacity
+                style={styles.cancelModalSecondaryButton}
+                onPress={() => setShowCancelConfirmModal(false)}
+              >
+                <Text style={styles.cancelModalSecondaryText}>No</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelModalPrimaryButton}
+                onPress={handleCancelAcceptedRide}
+              >
+                <Text style={styles.cancelModalPrimaryText}>Yes, Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -470,4 +823,168 @@ const styles = StyleSheet.create({
     top: '50%',
     alignSelf: 'center',
   },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    textAlign: 'center',
+    color: '#fa9907',
+  },
+  cancelModalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+  },
+  cancelModalText: {
+    fontSize: 15,
+    color: '#444',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  cancelModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  cancelModalSecondaryButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  cancelModalPrimaryButton: {
+    flex: 1,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    backgroundColor: '#f44336',
+  },
+  cancelModalSecondaryText: {
+    color: '#333',
+    fontWeight: '700',
+  },
+  cancelModalPrimaryText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  driverItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  driverName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  driverCar: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
+  driverDistance: {
+    fontSize: 12,
+    color: '#fa9907',
+    marginTop: 2,
+  },
+  callButton: {
+    backgroundColor: '#4CAF50',
+    padding: 10,
+    borderRadius: 25,
+  },
+  closeButton: {
+    marginTop: 20,
+    backgroundColor: '#fa9907',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  modalFooter: {
+    marginTop: 20,
+  },
+  requestButton: {
+    backgroundColor: '#fa9907',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  acceptedDriverCard: {
+    position: 'absolute',
+    bottom: 0,
+    width: '100%',
+    backgroundColor: '#fff',
+    padding: 20,
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 25,
+    elevation: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+  },
+  driverInfoContainer: { flex: 1, marginLeft: 10 },
+  driverMeta: { flex: 1 },
+  driverHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
+  driverAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    marginRight: 10,
+    backgroundColor: '#f0f0f0',
+  },
+  driverAvatarFallback: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    marginRight: 10,
+    backgroundColor: '#f0f0f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  acceptedDriverName: { fontSize: 20, fontWeight: 'bold', color: '#333' },
+  driverCarInfo: { fontSize: 15, color: '#666' },
+  driverPhoneText: { fontSize: 14, color: '#444', marginTop: 4 },
+  driverTripStatus: { fontSize: 13, color: '#1f8b4c', marginTop: 4, fontWeight: '600' },
+  callIcon: {
+    backgroundColor: '#4CAF50',
+    padding: 12,
+    borderRadius: 30,
+    elevation: 4,
+  },
+  cancelBtn: {
+    backgroundColor: '#f44336',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  cancelBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  doneTripBtn: {
+    backgroundColor: '#1f8b4c',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  doneTripBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 });

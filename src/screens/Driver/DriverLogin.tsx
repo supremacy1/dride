@@ -38,15 +38,18 @@ const DriverLoginScreen = ({ navigation }: { navigation: any }) => {
         throw new Error(data.message || 'Login failed');
       }
 
-      // Assuming the backend returns a user object with a role or type 'driver'
-      const driverData = data.user || data;
+      // Extract driver data from response (handling both 'user' and 'driver' keys from backend)
+      const driverData = data.driver || data.user || data;
       
-      if (!driverData.is_verified) {
-        Alert.alert('Account Pending', 'Your driver account is still under review by admin.');
+      // Check if driver is approved (handling multiple possible field names from backend)
+      const isApproved = driverData.is_verified === 1 || driverData.application_status === 'approved';
+      if (!isApproved) {
+        Alert.alert('Access Restricted', 'Your account is pending approval. You will be able to log in once verified.');
         return;
       }
 
-      signIn(driverData); // This updates the global auth state
+      // Sign in and explicitly set userType to 'driver' to trigger navigation to Driver Dashboard
+      signIn({ ...driverData, userType: 'driver' });
     } catch (error: any) {
       Alert.alert('Login Failed', error.message);
     } finally {

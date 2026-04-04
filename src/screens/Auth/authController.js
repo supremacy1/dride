@@ -151,13 +151,14 @@ exports.registerDriver = async (req, res) => {
     date_of_birth,
     license_number,
     car_model,
+    car_color,
     car_plate
   } = req.body;
 
   const files = req.files;
 
   // 2. Validate that all data is present.
-  if (!fullname || !email || !phone || !password || !address || !date_of_birth || !license_number || !car_model || !car_plate) {
+  if (!fullname || !email || !phone || !password || !address || !date_of_birth || !license_number || !car_model || !car_color || !car_plate) {
     return res.status(400).json({ message: 'Please fill all required text fields.' });
   }
 
@@ -185,10 +186,10 @@ exports.registerDriver = async (req, res) => {
 
     const [driverResult] = await db.query(
       `INSERT INTO drivers 
-      (fullname, email, phone, password, address, date_of_birth, license_number, car_model, car_plate, profile_picture, license_image, nin_image, vehicle_papers, proof_of_address)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (fullname, email, phone, password, address, date_of_birth, license_number, car_model, car_color, car_plate, profile_picture, license_image, nin_image, vehicle_papers, proof_of_address)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        fullname, email, phone, hashedPassword, address, date_of_birth, license_number, car_model, car_plate,
+        fullname, email, phone, hashedPassword, address, date_of_birth, license_number, car_model, car_color, car_plate,
         profilePath, licensePath, ninPath, vehiclePapersPath, proofOfAddressPath 
       ]
     );

@@ -69,11 +69,10 @@ const HomeScreen = ({ navigation }: { navigation: any }) => {
             style={styles.menuItem}
             onPress={() => {
               setMenuOpen(false);
-              // placeholder for review action
-              navigation.navigate('Booking');
+              navigation.navigate('RideHistory');
             }}
           >
-            <Text style={styles.menuItemText}>Review</Text>
+            <Text style={styles.menuItemText}>History & Payments</Text>
           </TouchableOpacity>
         </View>
       )}
