@@ -73,3 +73,11 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Local backend/frontend secrets
+src/screens/Auth/.env
+*.env.local
+
+# Runtime upload artifacts
+src/screens/Auth/uploads/
+src/screens/Auth/public/uploads/

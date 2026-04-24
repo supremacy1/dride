@@ -14,8 +14,10 @@ import Input from '../../components/Input';
 import Button from '../../components/Button';
 import {useAuth} from '../../context/AuthContext';
 import {API_URL} from '../../config/api';
+import {syncDriverLocation} from '../../utils/driverLocation';
 
 const LoginScreen = ({navigation}: {navigation: any}) => {
+  const [modalVariant, setModalVariant] = useState<'default' | 'accountNotFound' | 'approval'>('default');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginAs, setLoginAs] = useState<'user' | 'driver'>('user');
@@ -34,10 +36,12 @@ const LoginScreen = ({navigation}: {navigation: any}) => {
     title: string,
     message: string,
     actions: {text: string; onPress?: () => void}[] = [{text: 'OK'}],
+    variant: 'default' | 'accountNotFound' | 'approval' = 'default',
   ) => {
     setModalTitle(title);
     setModalMessage(message);
     setModalActions(actions);
+    setModalVariant(variant);
     setModalVisible(true);
   };
 
@@ -90,6 +94,17 @@ const LoginScreen = ({navigation}: {navigation: any}) => {
                   {text: 'OK'},
                 ]
               : [{text: 'OK'}],
+            'accountNotFound',
+          );
+          return;
+        }
+
+        if (response.status === 403) {
+          showModal(
+            'Account Not Approved',
+            data.message || 'Your driver account is pending approval.',
+            [{text: 'OK'}],
+            'approval',
           );
           return;
         }
@@ -102,6 +117,12 @@ const LoginScreen = ({navigation}: {navigation: any}) => {
       if (!userData || !userData.id) {
         showModal('Login Failed', 'Received invalid user data from server.');
         return;
+      }
+
+      if (loginAs === 'driver') {
+        syncDriverLocation(userData.id).catch(error => {
+          console.warn('Driver location sync after login failed:', error);
+        });
       }
 
       signIn({...userData, userType: loginAs === 'user' ? 'rider' : 'driver'});
@@ -244,21 +265,66 @@ const LoginScreen = ({navigation}: {navigation: any}) => {
 
         <Modal transparent visible={modalVisible} animationType="fade">
           <View style={styles.modalOverlay}>
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>{modalTitle}</Text>
-              <Text style={styles.modalMessage}>{modalMessage}</Text>
+            <View
+              style={[
+                styles.modalBox,
+                modalVariant === 'accountNotFound' && styles.accountNotFoundModal,
+                modalVariant === 'approval' && styles.approvalModal,
+              ]}>
+              {modalVariant !== 'default' ? (
+                <View
+                  style={[
+                    styles.modalIconWrap,
+                    modalVariant === 'accountNotFound'
+                      ? styles.accountNotFoundIconWrap
+                      : styles.approvalIconWrap,
+                  ]}>
+                  <MaterialIcons
+                    name={modalVariant === 'accountNotFound' ? 'person-search' : 'hourglass-top'}
+                    size={32}
+                    color={modalVariant === 'accountNotFound' ? '#c45518' : '#d97706'}
+                  />
+                </View>
+              ) : null}
+              <Text
+                style={[
+                  styles.modalTitle,
+                  modalVariant !== 'default' && styles.centeredModalTitle,
+                ]}>
+                {modalTitle}
+              </Text>
+              <Text
+                style={[
+                  styles.modalMessage,
+                  modalVariant !== 'default' && styles.centeredModalMessage,
+                ]}>
+                {modalMessage}
+              </Text>
               <View style={styles.modalActions}>
                 {modalActions.map((a, i) => (
                   <TouchableOpacity
                     key={i}
-                    style={styles.modalButton}
+                    style={[
+                      styles.modalButton,
+                      modalVariant !== 'default' && styles.primaryModalButton,
+                      modalVariant === 'accountNotFound' && i === 0 && modalActions.length > 1 && styles.primaryAccountButton,
+                      modalVariant === 'accountNotFound' && i === 1 && modalActions.length > 1 && styles.secondaryModalButton,
+                    ]}
                     onPress={() => {
                       setModalVisible(false);
+                      setModalVariant('default');
                       if (a.onPress) {
                         a.onPress();
                       }
                     }}>
-                    <Text style={styles.modalButtonText}>{a.text}</Text>
+                    <Text
+                      style={[
+                        styles.modalButtonText,
+                        modalVariant !== 'default' && styles.primaryModalButtonText,
+                        modalVariant === 'accountNotFound' && i === 1 && modalActions.length > 1 && styles.secondaryModalButtonText,
+                      ]}>
+                      {a.text}
+                    </Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -468,17 +534,48 @@ const styles = StyleSheet.create({
     padding: 18,
     borderRadius: 24,
   },
+  accountNotFoundModal: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    paddingHorizontal: 22,
+  },
+  approvalModal: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    paddingHorizontal: 22,
+  },
+  modalIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  accountNotFoundIconWrap: {
+    backgroundColor: '#fff3ea',
+  },
+  approvalIconWrap: {
+    backgroundColor: '#fff7e8',
+  },
   modalTitle: {
     fontSize: 19,
     fontWeight: '800',
     color: '#24140d',
     marginBottom: 8,
   },
+  centeredModalTitle: {
+    textAlign: 'center',
+  },
   modalMessage: {
     fontSize: 14,
     lineHeight: 21,
     color: '#71584a',
     marginBottom: 12,
+  },
+  centeredModalMessage: {
+    textAlign: 'center',
+    marginBottom: 16,
   },
   modalActions: {
     flexDirection: 'row',
@@ -489,9 +586,29 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     marginLeft: 8,
   },
+  primaryModalButton: {
+    minWidth: 120,
+    borderRadius: 16,
+    backgroundColor: '#c45518',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  primaryAccountButton: {
+    backgroundColor: '#f46f1f',
+  },
+  secondaryModalButton: {
+    backgroundColor: '#fff1e7',
+  },
   modalButtonText: {
     color: '#c45518',
     fontWeight: '800',
+  },
+  primaryModalButtonText: {
+    color: '#fff',
+    textAlign: 'center',
+  },
+  secondaryModalButtonText: {
+    color: '#9b623f',
   },
   modalCancelText: {
     color: '#8a6856',

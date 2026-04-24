@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config/api';
+import { syncDriverLocation } from '../../utils/driverLocation';
 
 const DriverLoginScreen = ({ navigation }: { navigation: any }) => {
   const [email, setEmail] = useState('');
@@ -47,6 +48,10 @@ const DriverLoginScreen = ({ navigation }: { navigation: any }) => {
         Alert.alert('Access Restricted', 'Your account is pending approval. You will be able to log in once verified.');
         return;
       }
+
+      syncDriverLocation(driverData.id).catch((error: any) => {
+        console.warn('Driver location sync after login failed:', error);
+      });
 
       // Sign in and explicitly set userType to 'driver' to trigger navigation to Driver Dashboard
       signIn({ ...driverData, userType: 'driver' });

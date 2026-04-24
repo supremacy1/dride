@@ -2,6 +2,12 @@ const db = require('./db');
 const { sendWelcomeEmail } = require('./emailService');
 const bcrypt = require('bcryptjs'); // Make sure to run: npm install bcryptjs
 const crypto = require('crypto');
+const {
+  assignDedicatedVirtualAccount,
+  ensureWalletBalance,
+  getDriverAccountDetails,
+  upsertDriverAccountDetails,
+} = require('./driverWalletService');
 
 
 exports.register = async (req, res) => {
@@ -88,10 +94,20 @@ exports.loginDriver = async (req, res) => {
         return res.status(403).json({ message: `Your application is currently ${driver.application_status}. You cannot log in until it is approved.` });
     }
 
+    const wallet = await ensureWalletBalance(driver.id);
+    const accountDetails = await getDriverAccountDetails(driver.id);
+
     // Don't send password hash back to the client
     delete driver.password;
 
-    res.status(200).json({ message: 'Driver login successful!', user: driver });
+    res.status(200).json({
+      message: 'Driver login successful!',
+      user: {
+        ...driver,
+        wallet,
+        accountDetails,
+      },
+    });
   } catch (error) {
     console.error('Driver login error:', error);
     res.status(500).json({ message: 'Server error during driver login.' });
@@ -113,11 +129,8 @@ exports.forgotPasswordDriver = async (req, res) => {
       return res.status(404).json({ message: 'No driver account found with this email.' });
     }
 
-    const driver = drivers[0];
-    
     // Generate a reset token
     const resetToken = crypto.randomBytes(20).toString('hex');
-    const resetTokenExpires = new Date(Date.now() + 3600000); // 1 hour
 
     // TODO: Save resetToken and resetTokenExpires to the drivers table in your DB
     // await db.query('UPDATE drivers SET reset_token = ?, reset_token_expires = ? WHERE id = ?', [resetToken, resetTokenExpires, driver.id]);
@@ -144,6 +157,7 @@ exports.registerDriver = async (req, res) => {
   // req.body is for text fields, req.files is for uploaded files.
   const {
     fullname,
+    surname,
     email,
     phone,
     password,
@@ -152,14 +166,22 @@ exports.registerDriver = async (req, res) => {
     license_number,
     car_model,
     car_color,
-    car_plate
+    car_plate,
+    ride_type,
+    current_lat,
+    current_lng,
   } = req.body;
 
   const files = req.files;
 
   // 2. Validate that all data is present.
-  if (!fullname || !email || !phone || !password || !address || !date_of_birth || !license_number || !car_model || !car_color || !car_plate) {
+  if (!fullname || !surname || !email || !phone || !password || !address || !date_of_birth || !license_number || !car_model || !car_color || !car_plate || !ride_type) {
     return res.status(400).json({ message: 'Please fill all required text fields.' });
+  }
+
+  const allowedRideTypes = ['bike', 'standard', 'luxury', 'van'];
+  if (!allowedRideTypes.includes(String(ride_type).toLowerCase())) {
+    return res.status(400).json({ message: 'Invalid ride type selected.' });
   }
 
   if (!files || !files.profile_picture || !files.license || !files.nin || !files.vehiclePapers || !files.proof_of_address) {
@@ -183,18 +205,81 @@ exports.registerDriver = async (req, res) => {
     const ninPath = files.nin[0].path;
     const vehiclePapersPath = files.vehiclePapers[0].path;
     const proofOfAddressPath = files.proof_of_address[0].path;
+    const parsedCurrentLat =
+      current_lat !== undefined && current_lat !== ''
+        ? Number(current_lat)
+        : null;
+    const parsedCurrentLng =
+      current_lng !== undefined && current_lng !== ''
+        ? Number(current_lng)
+        : null;
 
     const [driverResult] = await db.query(
       `INSERT INTO drivers 
-      (fullname, email, phone, password, address, date_of_birth, license_number, car_model, car_color, car_plate, profile_picture, license_image, nin_image, vehicle_papers, proof_of_address)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (fullname, surname, email, phone, password, address, date_of_birth, license_number, car_model, car_color, car_plate, ride_type, profile_picture, license_image, nin_image, vehicle_papers, proof_of_address, current_lat, current_lng)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        fullname, email, phone, hashedPassword, address, date_of_birth, license_number, car_model, car_color, car_plate,
-        profilePath, licensePath, ninPath, vehiclePapersPath, proofOfAddressPath 
+        fullname, surname, email, phone, hashedPassword, address, date_of_birth, license_number, car_model, car_color, car_plate,
+        String(ride_type).toLowerCase(), profilePath, licensePath, ninPath, vehiclePapersPath, proofOfAddressPath,
+        Number.isFinite(parsedCurrentLat) ? parsedCurrentLat : null,
+        Number.isFinite(parsedCurrentLng) ? parsedCurrentLng : null,
       ]
     );
 
-    res.status(201).json({ message: 'Driver application submitted successfully!', driverId: driverResult.insertId });
+    const driverId = driverResult.insertId;
+
+    let wallet = null;
+    let walletWarning = null;
+    try {
+      wallet = await ensureWalletBalance(driverId);
+    } catch (walletError) {
+      walletWarning = walletError.message || 'Wallet setup failed.';
+      console.error('Wallet setup error during driver registration:', walletError);
+    }
+
+    let paystackResult = {
+      success: false,
+      message: 'Virtual account setup is pending.',
+      accountDetails: null,
+    };
+
+    try {
+      paystackResult = await assignDedicatedVirtualAccount({
+        fullname,
+        surname,
+        email,
+        phone,
+        metadata: {
+          driver_id: driverId,
+          ride_type: String(ride_type).toLowerCase(),
+        },
+      });
+    } catch (paystackError) {
+      paystackResult = {
+        success: false,
+        message: paystackError.message || 'Could not create a Paystack virtual account.',
+        accountDetails: null,
+      };
+      console.error('Paystack setup error during driver registration:', paystackError);
+    }
+
+    let accountDetails = null;
+    let accountMessage = 'Virtual account setup is pending.';
+
+    if (paystackResult.success && paystackResult.accountDetails) {
+      accountDetails = await upsertDriverAccountDetails(driverId, paystackResult.accountDetails);
+      accountMessage = 'Virtual account created successfully.';
+    }
+
+    res.status(201).json({
+      message: 'Driver application submitted successfully!',
+      driverId,
+      wallet,
+      accountDetails,
+      accountMessage,
+      walletWarning,
+      paystackWarning: paystackResult.success ? null : paystackResult.message,
+    });
   } catch (error) {
     console.error('Driver registration error:', error);
     res.status(500).json({ message: 'Server error during driver registration.', error: error.message });

@@ -13,6 +13,11 @@ const cors = require('cors');
 const authRoutes = require('./auth');
 const driverRoutes = require('../Driver/driver');
 const db = require('./db');
+const {
+  handlePaystackWebhookEvent,
+  ensureWalletBalance,
+  verifyPaystackSignature,
+} = require('./driverWalletService');
 
 const app = express();
 const server = http.createServer(app);
@@ -24,8 +29,34 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3001;
+const DRIVER_WALLET_TABLE = 'driver_wallets';
+const DRIVER_WALLET_SELECT_FIELDS = 'id, driver_id, balance, total_earned, total_withdrawn, created_at, debt';
 
 app.use(cors());
+app.post(
+  '/api/paystack/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const signature = req.headers['x-paystack-signature'];
+    const bufferApi = global.Buffer;
+    const rawBody = bufferApi.isBuffer(req.body)
+      ? req.body
+      : bufferApi.from(req.body || '');
+
+    if (!verifyPaystackSignature(rawBody, signature)) {
+      return res.status(401).json({ message: 'Invalid Paystack signature.' });
+    }
+
+    try {
+      const event = JSON.parse(rawBody.toString('utf8'));
+      await handlePaystackWebhookEvent(event);
+      return res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Paystack webhook error:', error);
+      return res.status(500).json({ message: 'Webhook processing failed.' });
+    }
+  }
+);
 app.use(express.json());
 app.use('/uploads', express.static(path.resolve(__dirname, './public/uploads')));
 app.use('/uploads', express.static(path.resolve(__dirname, './uploads')));
@@ -78,6 +109,91 @@ const buildRideHistoryQuery = (role) => {
   `;
 };
 
+const creditDriverWalletForRide = async (ride) => {
+  if (!ride?.driver_id || Number(ride.fare || 0) <= 0) {
+    return null;
+  }
+
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await ensureWalletBalance(ride.driver_id, connection);
+
+    const settlementReference = `ride-${ride.id}-settlement`;
+    const [existingTransactions] = await connection.query(
+      `SELECT id
+       FROM wallet_transactions
+       WHERE driver_id = ? AND reference = ?
+       LIMIT 1`,
+      [ride.driver_id, settlementReference]
+    );
+
+    if (existingTransactions.length === 0) {
+      const fareAmount = Number(ride.fare || 0);
+      const commissionAmount = Number((fareAmount * 0.1).toFixed(2));
+      const driverEarningAmount = Number((fareAmount - commissionAmount).toFixed(2));
+
+      await connection.query(
+        `UPDATE ${DRIVER_WALLET_TABLE}
+         SET balance = balance - ?,
+             total_earned = total_earned + ?
+         WHERE driver_id = ?`,
+        [commissionAmount, driverEarningAmount, ride.driver_id]
+      );
+
+      await connection.query(
+        `INSERT INTO wallet_transactions (
+          driver_id,
+          type,
+          amount,
+          description,
+          reference
+        ) VALUES (?, 'credit', ?, ?, ?)`,
+        [
+          ride.driver_id,
+          driverEarningAmount,
+          `Driver earnings (90%) for ride #${ride.id}`,
+          settlementReference,
+        ]
+      );
+
+      await connection.query(
+        `INSERT INTO wallet_transactions (
+          driver_id,
+          type,
+          amount,
+          description,
+          reference
+        ) VALUES (?, 'debit', ?, ?, ?)`,
+        [
+          ride.driver_id,
+          commissionAmount,
+          `Platform commission (10%) for ride #${ride.id}`,
+          settlementReference,
+        ]
+      );
+    }
+
+    await connection.commit();
+    const [walletRows] = await connection.query(
+      `SELECT ${DRIVER_WALLET_SELECT_FIELDS}
+       FROM ${DRIVER_WALLET_TABLE}
+       WHERE driver_id = ?
+       LIMIT 1`,
+      [ride.driver_id]
+    );
+
+    return walletRows[0] || null;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
 const getRideById = async (rideId) => {
   const [rows] = await db.query(rideSelectSql, [rideId]);
   return rows[0] || null;
@@ -119,6 +235,10 @@ io.on('connection', (socket) => {
 
   socket.on('requestRide', async (rideData) => {
     try {
+      const allowedRideTypes = ['bike', 'standard', 'luxury', 'van'];
+      const normalizedRideType = allowedRideTypes.includes(String(rideData?.rideType).toLowerCase())
+        ? String(rideData.rideType).toLowerCase()
+        : null;
       const payload = [
         rideData.requestId,
         rideData.riderId,
@@ -162,13 +282,30 @@ io.on('connection', (socket) => {
 
       const ride = await getRideById(rideData.requestId);
       console.log(`[Socket] Ride requested by rider ${rideData.riderId}`);
-      io.to('drivers').emit('newRideRequest', {
+      const rideRequestPayload = {
         ...rideData,
+        rideType: normalizedRideType,
         riderPhone: ride?.rider_phone || null,
         riderName: ride?.rider_fullname || null,
         rider_phone: ride?.rider_phone || null,
         rider_fullname: ride?.rider_fullname || null,
-      });
+      };
+
+      if (normalizedRideType) {
+        const [drivers] = await db.query(
+          `SELECT id FROM drivers
+           WHERE ride_type = ?
+             AND current_lat IS NOT NULL
+             AND current_lng IS NOT NULL`,
+          [normalizedRideType]
+        );
+
+        drivers.forEach((driver) => {
+          io.to(`driver-${driver.id}`).emit('newRideRequest', rideRequestPayload);
+        });
+      } else {
+        io.to('drivers').emit('newRideRequest', rideRequestPayload);
+      }
     } catch (error) {
       console.error('Ride request error:', error);
       io.to(`rider-${rideData.riderId}`).emit('rideRequestFailed', {
@@ -297,6 +434,10 @@ io.on('connection', (socket) => {
       }
 
       const ride = await getRideById(data.requestId);
+      const updatedWallet = await creditDriverWalletForRide(ride);
+      const fareAmount = Number(ride?.fare || 0);
+      const commissionAmount = Number((fareAmount * 0.1).toFixed(2));
+      const driverEarningAmount = Number((fareAmount - commissionAmount).toFixed(2));
       io.to(`rider-${ride.rider_id}`).emit('tripEnded', {
         requestId: data.requestId,
         fare: ride.fare,
@@ -305,6 +446,9 @@ io.on('connection', (socket) => {
       io.to(`driver-${ride.driver_id}`).emit('tripEnded', {
         requestId: data.requestId,
         fare: ride.fare,
+        commission: commissionAmount,
+        earnedAmount: driverEarningAmount,
+        walletBalance: updatedWallet?.balance ?? null,
         message: 'Trip completed successfully.',
       });
 
@@ -346,6 +490,37 @@ io.on('connection', (socket) => {
       await emitRideHistoryUpdate(data.requestId);
     } catch (error) {
       console.error('Cancel ride error:', error);
+    }
+  });
+
+  socket.on('rideRequestTimeout', async (data) => {
+    try {
+      const [result] = await db.query(
+        `UPDATE rides
+         SET status = 'cancelled'
+         WHERE id = ? AND rider_id = ? AND status = 'pending'`,
+        [data.requestId, data.riderId]
+      );
+
+      if (!result.affectedRows) return;
+
+      const timeoutPayload = {
+        requestId: data.requestId || null,
+        riderId: data.riderId || null,
+        message: data.message || 'No driver accepted this ride request in time.',
+      };
+
+      io.to(`rider-${data.riderId}`).emit('rideRequestTimedOut', timeoutPayload);
+      io.to('drivers').emit('rideRequestTimedOut', timeoutPayload);
+      io.to('drivers').emit('rideTaken', {
+        requestId: data.requestId,
+        driverId: null,
+        status: 'timed_out',
+      });
+
+      await emitRideHistoryUpdate(data.requestId);
+    } catch (error) {
+      console.error('Ride request timeout error:', error);
     }
   });
 

@@ -7,7 +7,6 @@ import {
   TextInput,
   FlatList,
   ActivityIndicator,
-  Alert,
   PermissionsAndroid,
   Platform,
   Dimensions,
@@ -22,18 +21,27 @@ import Geolocation from '@react-native-community/geolocation';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config/api';
+import { GOOGLE_MAPS_API_KEY } from '../../config/generatedEnv';
 import { io, Socket } from 'socket.io-client';
 
-const GOOGLE_API_KEY = 'AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ';
+const GOOGLE_API_KEY = GOOGLE_MAPS_API_KEY;
 // const API_URL = 'http://192.168.43.211:3001'; // Taken from Login.tsx. Ensure this is your correct server IP.
 
 const { height } = Dimensions.get('window');
+
+type FeedbackModalState = {
+  visible: boolean;
+  title: string;
+  message: string;
+  tone: 'success' | 'warning' | 'error';
+};
 
 
 const RIDE_TYPES = [
   { id: 'bike', label: 'Delivery', multiplier: 0.7, image: require('../../assets/db.jpg') },
   { id: 'standard', label: 'Standard', multiplier: 1, image: require('../../assets/car1.jpg') },
-  { id: 'xl', label: 'Luxury', multiplier: 1.5, image: require('../../assets/car2.jpg') },
+  { id: 'luxury', label: 'Luxury', multiplier: 1.25, image: require('../../assets/car2.jpg') },
+  { id: 'van', label: 'Close Van', multiplier: 5.5, image: require('../../assets/van.png') },
 ];
 
 const BookingScreen = () => {
@@ -50,12 +58,22 @@ const BookingScreen = () => {
   const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState<any[]>([]);
   const [selectedRideType, setSelectedRideType] = useState('standard');
+  const [isEditingRoute, setIsEditingRoute] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
+  const [showNoDriverModal, setShowNoDriverModal] = useState(false);
+  const [showRideCancelledModal, setShowRideCancelledModal] = useState(false);
   const [showDriversModal, setShowDriversModal] = useState(false);
   const [nearbyDrivers, setNearbyDrivers] = useState<any[]>([]);
   const [acceptedDriver, setAcceptedDriver] = useState<any>(null);
   const [completedTrip, setCompletedTrip] = useState<any>(null);
+  const [rideCancelledMessage, setRideCancelledMessage] = useState('');
+  const [feedbackModal, setFeedbackModal] = useState<FeedbackModalState>({
+    visible: false,
+    title: '',
+    message: '',
+    tone: 'success',
+  });
   const [rideStatus, setRideStatus] = useState<'idle' | 'pending' | 'accepted' | 'started' | 'completed' | 'cancelled'>('idle');
   const [isSocketConnected, setIsSocketConnected] = useState(false);
   const isFindingRef = useRef(false);
@@ -80,6 +98,26 @@ const BookingScreen = () => {
     }
   };
 
+  const showFeedbackModal = (
+    title: string,
+    message: string,
+    tone: FeedbackModalState['tone'] = 'success'
+  ) => {
+    setFeedbackModal({
+      visible: true,
+      title,
+      message,
+      tone,
+    });
+  };
+
+  const closeFeedbackModal = () => {
+    setFeedbackModal((current) => ({
+      ...current,
+      visible: false,
+    }));
+  };
+
   const handleCancelAcceptedRide = () => {
     if (socketRef.current && acceptedDriver?.socketId) {
       socketRef.current.emit('cancelRide', {
@@ -98,6 +136,8 @@ const BookingScreen = () => {
     setAcceptedDriver(null);
     setCompletedTrip(null);
     setRideStatus('cancelled');
+    setRideCancelledMessage('Your ride request has been cancelled successfully.');
+    setShowRideCancelledModal(true);
     setShowCancelConfirmModal(false);
   };
 
@@ -168,7 +208,11 @@ const BookingScreen = () => {
       }
 
       setRideStatus('started');
-      Alert.alert('Trip Started', payload?.message || 'Your driver has started the trip.');
+      showFeedbackModal(
+        'Trip Started',
+        payload?.message || 'Your driver has started the trip.',
+        'success'
+      );
     });
 
     newSocket.on('tripEnded', (payload: any) => {
@@ -181,9 +225,10 @@ const BookingScreen = () => {
         driver: acceptedDriverRef.current,
         fare: payload?.fare || 0,
       });
-      Alert.alert(
+      showFeedbackModal(
         'Trip Completed',
-        `Payment recorded: N${Number(payload?.fare || 0).toFixed(0)}`
+        `Payment recorded: N${Number(payload?.fare || 0).toFixed(0)}`,
+        'success'
       );
       acceptedRequestIdRef.current = null;
       activeRequestIdRef.current = null;
@@ -199,6 +244,23 @@ const BookingScreen = () => {
       acceptedRequestIdRef.current = null;
       activeRequestIdRef.current = null;
       setAcceptedDriver(null);
+      setRideCancelledMessage(payload?.message || 'This ride has been cancelled.');
+      setShowRideCancelledModal(true);
+    });
+
+    newSocket.on('rideRequestTimedOut', (payload: any) => {
+      if (payload?.requestId && activeRequestIdRef.current && payload.requestId !== activeRequestIdRef.current) {
+        return;
+      }
+
+      clearFindDriverTimeout();
+      isFindingRef.current = false;
+      activeRequestIdRef.current = null;
+      setIsFindingDriver(false);
+      setRideStatus('idle');
+      setShowRideCancelledModal(false);
+      setRideCancelledMessage('');
+      setShowNoDriverModal(true);
     });
 
     newSocket.on('driverRideCancelled', (payload: any) => {
@@ -210,7 +272,8 @@ const BookingScreen = () => {
       acceptedRequestIdRef.current = null;
       activeRequestIdRef.current = null;
       setAcceptedDriver(null);
-      Alert.alert('Ride Cancelled', payload?.message || 'The driver cancelled this ride.');
+      setRideCancelledMessage(payload?.message || 'The driver cancelled this ride.');
+      setShowRideCancelledModal(true);
     });
 
     newSocket.on('rideRequestFailed', (payload: any) => {
@@ -223,7 +286,11 @@ const BookingScreen = () => {
       activeRequestIdRef.current = null;
       setIsFindingDriver(false);
       setRideStatus('idle');
-      Alert.alert('Request Error', payload?.message || 'Could not create ride request.');
+      showFeedbackModal(
+        'Request Error',
+        payload?.message || 'Could not create ride request.',
+        'error'
+      );
     });
 
     return () => {
@@ -232,6 +299,7 @@ const BookingScreen = () => {
       newSocket.off('tripStarted');
       newSocket.off('tripEnded');
       newSocket.off('rideCancelled');
+      newSocket.off('rideRequestTimedOut');
       newSocket.off('driverRideCancelled');
       newSocket.off('rideRequestFailed');
       socketRef.current = null;
@@ -269,7 +337,7 @@ const BookingScreen = () => {
           setLoadingLocation(false);
         },
         (error) => {
-          Alert.alert('Location Error', error.message);
+          showFeedbackModal('Location Error', error.message, 'error');
           setLoadingLocation(false);
         },
         { enableHighAccuracy: true, timeout: 20000 }
@@ -288,7 +356,7 @@ const BookingScreen = () => {
       if (pickupCoords) {
         try {
           const response = await fetch(
-            `${API_URL}/api/driver/nearby?lat=${pickupCoords.latitude}&lng=${pickupCoords.longitude}&radius=10`
+            `${API_URL}/api/driver/nearby?lat=${pickupCoords.latitude}&lng=${pickupCoords.longitude}&radius=10&rideType=${encodeURIComponent(selectedRideType)}`
           );
           const data = await response.json();
           if (response.ok && Array.isArray(data)) {
@@ -305,7 +373,7 @@ const BookingScreen = () => {
       interval = setInterval(fetchNearby, 5000); // Poll every 5 seconds for smoother Bolt-like feel
     }
     return () => clearInterval(interval);
-  }, [pickupCoords, acceptedDriver]);
+  }, [pickupCoords, acceptedDriver, selectedRideType]);
 
   // ============================
   // REVERSE GEOCODE
@@ -366,9 +434,10 @@ const BookingScreen = () => {
         const coords = { latitude: location.lat, longitude: location.lng };
         if (type === 'pickup') setPickupCoords(coords);
         else setDestinationCoords(coords);
+        setIsEditingRoute(false);
       }
     } catch {
-      Alert.alert('Error fetching place details');
+      showFeedbackModal('Place Error', 'Error fetching place details.', 'error');
     }
   };
 
@@ -389,21 +458,27 @@ const BookingScreen = () => {
     return (baseFare + km * perKm) * multiplier;
   };
 
+  const formatPrice = (amount: number) => `NGN ${amount.toFixed(0)}`;
+
   // ============================
   // FIND DRIVER
   // ============================
   const handleFindDriver = async () => {
     if (!pickupCoords || !destinationCoords) {
-      Alert.alert('Missing Location', 'Please select both pickup and destination.');
+      showFeedbackModal('Missing Location', 'Please select both pickup and destination.', 'warning');
       return;
     }
     if (!user) {
-      Alert.alert('Not Logged In', 'You need to be logged in to book a ride.');
+      showFeedbackModal('Not Logged In', 'You need to be logged in to book a ride.', 'warning');
       return;
     }
 
     if (!isSocketConnected) {
-      Alert.alert('Connection Error', 'Reconnecting to server. Please try again in a moment.');
+      showFeedbackModal(
+        'Connection Error',
+        'Reconnecting to server. Please try again in a moment.',
+        'warning'
+      );
       return;
     }
 
@@ -436,11 +511,19 @@ const BookingScreen = () => {
       // Step 3: Wait for a driver to accept. Clear this if driver accepts earlier.
       findTimeoutRef.current = setTimeout(() => {
         if (isFindingRef.current && activeRequestIdRef.current === requestId) {
-          setIsFindingDriver(false);
+          socketRef.current?.emit('rideRequestTimeout', {
+            requestId,
+            riderId: user.id,
+            message: 'No driver accepted this ride request in time.',
+          });
+          clearFindDriverTimeout();
           isFindingRef.current = false;
           activeRequestIdRef.current = null;
-          Alert.alert('No Driver Found', 'No driver accepted your request. Try again later.');
+          setIsFindingDriver(false);
           setRideStatus('idle');
+          setShowRideCancelledModal(false);
+          setRideCancelledMessage('');
+          setShowNoDriverModal(true);
         }
       }, 30000);
     } catch {
@@ -449,9 +532,27 @@ const BookingScreen = () => {
       isFindingRef.current = false;
       activeRequestIdRef.current = null;
       setRideStatus('idle');
-      Alert.alert('Request Error', 'Could not search for drivers. Please try again.');
+      showFeedbackModal(
+        'Request Error',
+        'Could not search for drivers. Please try again.',
+        'error'
+      );
     }
   };
+
+  const feedbackAccentColor =
+    feedbackModal.tone === 'error'
+      ? '#d93025'
+      : feedbackModal.tone === 'warning'
+        ? '#b45309'
+        : '#1f8b4c';
+  const feedbackBackgroundColor =
+    feedbackModal.tone === 'error'
+      ? '#ffe9e7'
+      : feedbackModal.tone === 'warning'
+        ? '#fff4db'
+        : '#eaf8ef';
+  const feedbackIcon = feedbackModal.tone === 'error' ? '!' : feedbackModal.tone === 'warning' ? 'i' : '✓';
 
   return (
     <View style={styles.container}>
@@ -496,6 +597,26 @@ const BookingScreen = () => {
           )}
         </MapView>
       )}
+
+      <Modal visible={feedbackModal.visible} transparent animationType="fade" onRequestClose={closeFeedbackModal}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.feedbackModal}>
+            <View style={[styles.feedbackIconWrap, { backgroundColor: feedbackBackgroundColor }]}>
+              <Text style={[styles.feedbackIconText, { color: feedbackAccentColor }]}>
+                {feedbackIcon}
+              </Text>
+            </View>
+            <Text style={styles.feedbackTitle}>{feedbackModal.title}</Text>
+            <Text style={styles.feedbackMessage}>{feedbackModal.message}</Text>
+            <TouchableOpacity
+              style={[styles.feedbackButton, { backgroundColor: feedbackAccentColor }]}
+              onPress={closeFeedbackModal}
+            >
+              <Text style={styles.feedbackButtonText}>Okay</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Accepted Driver UI */}
       {acceptedDriver ? (
@@ -566,8 +687,11 @@ const BookingScreen = () => {
         <TextInput
           placeholder="Enter Pickup"
           value={pickup}
+          onFocus={() => setIsEditingRoute(true)}
           onChangeText={(text) => {
+            setIsEditingRoute(true);
             setPickup(text);
+            setPickupCoords(null);
             fetchSuggestions(text, 'pickup');
           }}
           style={styles.input}
@@ -591,8 +715,11 @@ const BookingScreen = () => {
         <TextInput
           placeholder="Enter Destination"
           value={destination}
+          onFocus={() => setIsEditingRoute(true)}
           onChangeText={(text) => {
+            setIsEditingRoute(true);
             setDestination(text);
+            setDestinationCoords(null);
             fetchSuggestions(text, 'destination');
           }}
           style={styles.input}
@@ -613,37 +740,78 @@ const BookingScreen = () => {
           />
         )}
 
-        {/* Ride Type Selector */}
-        <View style={styles.rideTypeContainer}>
-          {RIDE_TYPES.map((type) => (
-            <TouchableOpacity
-              key={type.id}
-              style={[
-                styles.rideTypeOption,
-                selectedRideType === type.id && styles.selectedRideType,
-              ]}
-              onPress={() => setSelectedRideType(type.id)}
-            >
-              <Image source={type.image} style={styles.rideTypeImage} />
-              <Text
-                style={[
-                  styles.rideTypeText,
-                  selectedRideType === type.id && styles.selectedRideTypeText,
-                ]}
-              >
-                {type.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {destinationCoords && !isEditingRoute ? (
+          <>
+            {/* Ride Type Selector */}
+            <View style={styles.rideTypeContainer}>
+              {RIDE_TYPES.map((type) => (
+                <TouchableOpacity
+                  key={type.id}
+                  style={[
+                    styles.rideTypeOption,
+                    selectedRideType === type.id && styles.selectedRideType,
+                  ]}
+                  onPress={() => setSelectedRideType(type.id)}
+                >
+                  <Image source={type.image} style={styles.rideTypeImage} />
+                  <View style={styles.rideTypeDetails}>
+                    <Text
+                      style={[
+                        styles.rideTypeText,
+                        selectedRideType === type.id && styles.selectedRideTypeText,
+                      ]}
+                    >
+                      {type.label}
+                    </Text>
+                    <Text style={styles.rideTypeSubtext}>
+                      {type.id === 'bike'
+                        ? 'Fast package delivery'
+                         : type.id === 'standard'
+                        ? 'Premium comfort ride'
+                        : type.id === 'luxury'
+                        ? 'Luxury comfort ride'
+                        : type.id === 'van'
+                        ? 'Affordable for Relocation '
+                        : 'Affordable for Relocation '}
+                    </Text>
+                  </View>
+                  <View style={styles.rideTypeFareWrap}>
+                    <Text
+                      style={[
+                        styles.rideTypeFare,
+                        selectedRideType === type.id && styles.selectedRideTypeFareSelected,
+                      ]}
+                    >
+                      {distance > 0 ? formatPrice(calculatePrice(distance, type.id)) : 'Set route'}
+                    </Text>
+                    <Text style={styles.rideTypeFareHint}>
+                      {selectedRideType === type.id ? 'Selected' : 'Tap to choose'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
 
-        {distance > 0 && (
+            {distance > 0 && (
+              <View style={styles.fareBox}>
+                <Text style={styles.distanceText}>
+                  Distance: {distance.toFixed(2)} km
+                </Text>
+                <Text style={styles.priceText}>
+                  Selected Ride: {formatPrice(price)}
+                </Text>
+              </View>
+            )}
+          </>
+        ) : (
           <View style={styles.fareBox}>
             <Text style={styles.distanceText}>
-              Distance: {distance.toFixed(2)} km
+              {isEditingRoute ? 'Finish typing your route' : 'Choose your destination first'}
             </Text>
-            <Text style={styles.priceText}>
-              Estimated Fare: ₦{price.toFixed(0)}
+            <Text style={styles.rideTypeHintText}>
+              {isEditingRoute
+                ? 'Ride options will come back after you select the location.'
+                : 'Ride options will show after you select where you are going.'}
             </Text>
           </View>
         )}
@@ -725,6 +893,50 @@ const BookingScreen = () => {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={showNoDriverModal} animationType="fade" transparent={true}>
+        <View style={styles.modalContainer}>
+          <View style={styles.noDriverModalContent}>
+            <View style={styles.noDriverIconWrap}>
+              <MaterialIcons name="search-off" size={34} color="#fa9907" />
+            </View>
+            <Text style={styles.noDriverTitle}>No Driver Accepted</Text>
+            <Text style={styles.noDriverText}>
+              No driver accepted your request right now. Please try again in a moment.
+            </Text>
+            <TouchableOpacity
+              style={styles.noDriverButton}
+              onPress={() => setShowNoDriverModal(false)}
+            >
+              <Text style={styles.noDriverButtonText}>Okay</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showRideCancelledModal} animationType="fade" transparent={true}>
+        <View style={styles.modalContainer}>
+          <View style={styles.rideCancelledModalContent}>
+            <View style={styles.rideCancelledIconWrap}>
+              <MaterialIcons name="cancel" size={34} color="#f44336" />
+            </View>
+            <Text style={styles.rideCancelledTitle}>Ride Cancelled</Text>
+            <Text style={styles.rideCancelledText}>
+              {rideCancelledMessage || 'This ride has been cancelled.'}
+            </Text>
+            <TouchableOpacity
+              style={styles.rideCancelledButton}
+              onPress={() => {
+                setShowRideCancelledModal(false);
+                setRideCancelledMessage('');
+                setRideStatus('idle');
+              }}
+            >
+              <Text style={styles.rideCancelledButtonText}>Okay</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -766,39 +978,64 @@ const styles = StyleSheet.create({
     borderBottomColor: '#eee',
   },
   rideTypeContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: 'column',
     marginBottom: 15,
+    gap: 10,
   },
   rideTypeOption: {
-    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
-    padding: 10,
+    padding: 12,
     borderWidth: 1,
     borderColor: '#ddd',
-    borderRadius: 8,
-    marginHorizontal: 4,
+    borderRadius: 16,
     backgroundColor: '#fff',
   },
   selectedRideType: {
-    backgroundColor: '#fdfcfa',
+    backgroundColor: '#fff8ef',
     borderColor: '#fa9907',
     borderWidth: 2,
   },
   rideTypeImage: {
-    width: 60,
-    height: 60,
-    resizeMode: 'contain',
+    width: 58,
+    height: 58,
+    resizeMode: 'cover',
+    borderRadius: 12,
+  },
+  rideTypeDetails: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 10,
   },
   rideTypeText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#333',
+  },
+  rideTypeSubtext: {
     marginTop: 4,
     fontSize: 12,
-    fontWeight: '600',
-    color: '#333',
+    color: '#777',
+  },
+  rideTypeFareWrap: {
+    alignItems: 'flex-end',
+  },
+  rideTypeFare: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111',
+  },
+  rideTypeFareHint: {
+    marginTop: 4,
+    fontSize: 11,
+    color: '#888',
   },
   selectedRideTypeText: {
     color: '#0e0d0d',
     fontWeight: 'bold',
+  },
+  selectedRideTypeFareSelected: {
+    color: '#fa9907',
   },
   fareBox: {
     backgroundColor: '#f7f7f7',
@@ -807,6 +1044,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   distanceText: { fontSize: 14 },
+  rideTypeHintText: { fontSize: 13, color: '#666', marginTop: 4 },
   priceText: { fontSize: 18, fontWeight: 'bold', marginTop: 4 },
   button: {
     backgroundColor: '#fa9907',
@@ -822,6 +1060,13 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: '50%',
     alignSelf: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
   },
   modalContainer: {
     flex: 1,
@@ -852,6 +1097,136 @@ const styles = StyleSheet.create({
     color: '#444',
     textAlign: 'center',
     marginBottom: 20,
+  },
+  noDriverModalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+  },
+  noDriverIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#fff4e5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  noDriverTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#222',
+    marginBottom: 8,
+  },
+  noDriverText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  noDriverButton: {
+    width: '100%',
+    backgroundColor: '#fa9907',
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  noDriverButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  rideCancelledModalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+  },
+  rideCancelledIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#fdeceb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  rideCancelledTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#222',
+    marginBottom: 8,
+  },
+  rideCancelledText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  rideCancelledButton: {
+    width: '100%',
+    backgroundColor: '#f44336',
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  rideCancelledButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  feedbackModal: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  feedbackIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  feedbackIconText: {
+    fontSize: 32,
+    fontWeight: '800',
+  },
+  feedbackTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1f2937',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  feedbackMessage: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  feedbackButton: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    width: '100%',
+    alignItems: 'center',
+  },
+  feedbackButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
   cancelModalActions: {
     flexDirection: 'row',
@@ -988,3 +1363,4 @@ const styles = StyleSheet.create({
   },
   doneTripBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 });
+

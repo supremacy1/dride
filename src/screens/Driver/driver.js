@@ -4,6 +4,13 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 const db = require('../Auth/db'); 
+const {
+  assignDedicatedVirtualAccount,
+  ensureWalletBalance,
+  getDriverAccountDetails,
+  getDriverFundingProfile,
+  upsertDriverAccountDetails,
+} = require('../Auth/driverWalletService');
 
 const router = express.Router();
 const uploadDir = path.resolve(__dirname, '../Auth/public/uploads');
@@ -55,15 +62,20 @@ const uploadFields = [
 router.post('/register', upload.fields(uploadFields), async (req, res) => {
   const {
     fullname, email, password, phone, address, date_of_birth,
-    license_number, car_model, car_plate
+    license_number, car_model, car_color, car_plate, ride_type, current_lat, current_lng
   } = req.body;
 
   // --- Validation ---
-  if (!fullname || !email || !password || !phone || !address || !date_of_birth || !license_number || !car_model || !car_plate) {
+  if (!fullname || !email || !password || !phone || !address || !date_of_birth || !license_number || !car_model || !car_color || !car_plate || !ride_type) {
     return res.status(400).json({ message: 'Please fill all required text fields.' });
   }
   if (!req.files || Object.keys(req.files).length < 5) {
       return res.status(400).json({ message: 'Please upload all 5 required documents.' });
+  }
+
+  const allowedRideTypes = ['bike', 'standard', 'luxury', 'van'];
+  if (!allowedRideTypes.includes(String(ride_type).toLowerCase())) {
+    return res.status(400).json({ message: 'Invalid ride type selected.' });
   }
 
   try {
@@ -80,25 +92,74 @@ router.post('/register', upload.fields(uploadFields), async (req, res) => {
     // Get file paths (Multer saves them to the server)
     // The path should be stored relative to what the server serves statically
     const getPath = (fieldName) => `public/uploads/${req.files[fieldName][0].filename}`;
+    const parsedCurrentLat =
+      current_lat !== undefined && current_lat !== '' ? Number(current_lat) : null;
+    const parsedCurrentLng =
+      current_lng !== undefined && current_lng !== '' ? Number(current_lng) : null;
 
     // --- Database Insertion ---
     const sql = `
       INSERT INTO drivers (
         fullname, email, phone, password_hash, address, date_of_birth,
-        license_number, car_model, car_plate, profile_picture,
-        license_image, vehicle_papers, nin_image, proof_of_address
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        license_number, car_model, car_color, car_plate, ride_type, profile_picture,
+        license_image, vehicle_papers, nin_image, proof_of_address, current_lat, current_lng
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
       fullname, email, phone, password_hash, address, date_of_birth,
-      license_number, car_model, car_plate, getPath('profile_picture'),
-      getPath('license'), getPath('vehiclePapers'), getPath('nin'), getPath('proof_of_address')
+      license_number, car_model, car_color, car_plate, String(ride_type).toLowerCase(), getPath('profile_picture'),
+      getPath('license'), getPath('vehiclePapers'), getPath('nin'), getPath('proof_of_address'),
+      Number.isFinite(parsedCurrentLat) ? parsedCurrentLat : null,
+      Number.isFinite(parsedCurrentLng) ? parsedCurrentLng : null
     ];
 
-    await db.query(sql, values);
+    const [result] = await db.query(sql, values);
+    const driverId = result.insertId;
 
-    res.status(201).json({ message: 'Driver registration successful. Your application is under review.' });
+    let walletWarning = null;
+    try {
+      await ensureWalletBalance(driverId);
+    } catch (walletError) {
+      walletWarning = walletError.message || 'Wallet setup failed.';
+      console.error('Wallet setup error during driver registration:', walletError);
+    }
+
+    let paystackResult = {
+      success: false,
+      message: 'Virtual account setup is pending.',
+      accountDetails: null,
+    };
+
+    try {
+      paystackResult = await assignDedicatedVirtualAccount({
+        fullname,
+        email,
+        phone,
+        metadata: {
+          driver_id: driverId,
+          ride_type: String(ride_type).toLowerCase(),
+        },
+      });
+    } catch (paystackError) {
+      paystackResult = {
+        success: false,
+        message: paystackError.message || 'Could not create a Paystack virtual account.',
+        accountDetails: null,
+      };
+      console.error('Paystack setup error during driver registration:', paystackError);
+    }
+
+    if (paystackResult.success && paystackResult.accountDetails) {
+      await upsertDriverAccountDetails(driverId, paystackResult.accountDetails);
+    }
+
+    res.status(201).json({
+      message: 'Driver registration successful. Your application is under review.',
+      driverId,
+      walletWarning,
+      paystackWarning: paystackResult.success ? null : paystackResult.message,
+    });
 
   } catch (error) {
     console.error('Driver registration database error:', error);
@@ -138,8 +199,17 @@ router.post('/login', async (req, res) => {
     }
 
     // Login successful. Don't send the password hash back to the client.
+    const wallet = await ensureWalletBalance(driver.id);
+    const accountDetails = await getDriverAccountDetails(driver.id);
     const { password_hash, ...driverData } = driver;
-    res.status(200).json({ message: 'Login successful!', driver: driverData });
+    res.status(200).json({
+      message: 'Login successful!',
+      driver: {
+        ...driverData,
+        wallet,
+        accountDetails,
+      },
+    });
 
   } catch (error) {
     console.error('Driver login error:', error);
@@ -179,9 +249,18 @@ router.put('/update-profile', upload.single('profile_picture'), async (req, res)
 
     // Fetch updated driver data to send back to client
     const [drivers] = await db.query('SELECT * FROM drivers WHERE id = ?', [id]);
+    const wallet = await ensureWalletBalance(id);
+    const accountDetails = await getDriverAccountDetails(id);
     const { password_hash, ...driverData } = drivers[0];
 
-    res.status(200).json({ message: 'Profile updated successfully!', driver: driverData });
+    res.status(200).json({
+      message: 'Profile updated successfully!',
+      driver: {
+        ...driverData,
+        wallet,
+        accountDetails,
+      },
+    });
   } catch (error) {
     console.error('Driver update error:', error);
     res.status(500).json({ message: 'Server error during profile update.' });
@@ -206,10 +285,38 @@ router.post('/update-location', async (req, res) => {
   }
 });
 
+router.get('/wallet/:driverId', async (req, res) => {
+  const { driverId } = req.params;
+
+  if (!driverId) {
+    return res.status(400).json({ message: 'Driver ID is required.' });
+  }
+
+  try {
+    const { wallet, accountDetails } = await getDriverFundingProfile(driverId);
+    const [transactions] = await db.query(
+      `SELECT id, driver_id, type, amount, description, reference, created_at
+       FROM wallet_transactions
+       WHERE driver_id = ?
+       ORDER BY created_at DESC, id DESC`,
+      [driverId]
+    );
+
+    return res.status(200).json({
+      wallet,
+      accountDetails,
+      transactions,
+    });
+  } catch (error) {
+    console.error('Fetch wallet error:', error);
+    return res.status(500).json({ message: 'Server error fetching wallet.' });
+  }
+});
+
 // --- Find Nearby Drivers ---
 // Handles GET requests to /api/driver/nearby?lat=...&lng=...
 router.get('/nearby', async (req, res) => {
-  const { lat, lng, radius = 10 } = req.query; // Default radius of 10km
+  const { lat, lng, radius = 10, rideType } = req.query; // Default radius of 10km
 
   if (!lat || !lng) {
     return res.status(400).json({ message: 'Latitude and longitude are required.' });
@@ -222,16 +329,26 @@ router.get('/nearby', async (req, res) => {
     }
 
     // Haversine formula to find active drivers within radius
+    const allowedRideTypes = ['bike', 'standard', 'luxury', 'van'];
+    const normalizedRideType =
+      rideType && allowedRideTypes.includes(String(rideType).toLowerCase())
+        ? String(rideType).toLowerCase()
+        : null;
+
     const sql = `
-      SELECT id, fullname, phone, car_model, car_plate, current_lat, current_lng,
+      SELECT id, fullname, phone, car_model, car_color, car_plate, ride_type, current_lat, current_lng,
       (6371 * acos(cos(radians(?)) * cos(radians(current_lat)) * cos(radians(current_lng) - radians(?)) + sin(radians(?)) * sin(radians(current_lat)))) AS distance
       FROM drivers
       WHERE current_lat IS NOT NULL AND current_lng IS NOT NULL
+      ${normalizedRideType ? 'AND ride_type = ?' : ''}
       HAVING distance < ?
       ORDER BY distance ASC
       LIMIT 10
     `;
-    const [drivers] = await db.query(sql, [lat, lng, lat, radius]);
+    const params = normalizedRideType
+      ? [lat, lng, lat, normalizedRideType, radius]
+      : [lat, lng, lat, radius];
+    const [drivers] = await db.query(sql, params);
     res.status(200).json(drivers);
   } catch (error) {
     console.error('Find nearby error:', error);

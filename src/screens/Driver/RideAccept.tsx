@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  Alert,
   TouchableOpacity,
   Linking,
   PermissionsAndroid,
@@ -14,21 +13,39 @@ import {
 import MapViewWrapper from '../../components/MapView';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config/api';
+import { GOOGLE_MAPS_API_KEY } from '../../config/generatedEnv';
 import Geolocation from '@react-native-community/geolocation';
 import { io, Socket } from 'socket.io-client';
 
-const GOOGLE_API_KEY = 'AIzaSyBKByWTDAzcGoKnnJ9tLRLr64khD8NBAKQ';
+const GOOGLE_API_KEY = GOOGLE_MAPS_API_KEY;
+
+type FeedbackModalState = {
+  visible: boolean;
+  title: string;
+  message: string;
+  tone: 'success' | 'warning' | 'error';
+};
 
 const RideAcceptScreen = () => {
   const { user } = useAuth();
   const [locationReady, setLocationReady] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const acceptedRideRef = useRef<any>(null);
+  const pendingRideRequestRef = useRef<any>(null);
+  const pendingRideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [acceptedRide, setAcceptedRide] = useState<any>(null);
+  const [walletBalance, setWalletBalance] = useState(Number(user?.wallet?.balance || 0));
   const [currentLocation, setCurrentLocation] = useState('Detecting current location...');
   const [tripStatus, setTripStatus] = useState<'idle' | 'accepted' | 'started' | 'ended'>('idle');
   const [isEndingTrip, setIsEndingTrip] = useState(false);
   const [pendingRideRequest, setPendingRideRequest] = useState<any>(null);
+  const [cancelledRideMessage, setCancelledRideMessage] = useState('');
+  const [feedbackModal, setFeedbackModal] = useState<FeedbackModalState>({
+    visible: false,
+    title: '',
+    message: '',
+    tone: 'success',
+  });
   const geocodeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [region, setRegion] = useState({
     // latitude: 6.5244, // Default center
@@ -43,6 +60,52 @@ const RideAcceptScreen = () => {
 
   const getActiveRideId = () =>
     acceptedRideRef.current?.id || acceptedRideRef.current?.requestId || null;
+
+  const normalizeRideType = useCallback((value: any) => {
+    const normalizedValue = String(value || '').trim().toLowerCase();
+
+    if (normalizedValue === 'xl') {
+      return 'luxury';
+    }
+
+    return normalizedValue;
+  }, []);
+
+  const formatRideTypeLabel = useCallback((value: any) => {
+    const normalizedValue = normalizeRideType(value);
+
+    switch (normalizedValue) {
+      case 'bike':
+        return 'Delivery';
+      case 'standard':
+        return 'Standard';
+      case 'luxury':
+        return 'Luxury';
+      case 'van':
+        return 'Close Van';
+      default:
+        return 'Not specified';
+    }
+  }, [normalizeRideType]);
+
+  const showFeedbackModal = useCallback(
+    (title: string, message: string, tone: FeedbackModalState['tone'] = 'success') => {
+      setFeedbackModal({
+        visible: true,
+        title,
+        message,
+        tone,
+      });
+    },
+    []
+  );
+
+  const closeFeedbackModal = useCallback(() => {
+    setFeedbackModal((current) => ({
+      ...current,
+      visible: false,
+    }));
+  }, []);
 
   const updateBackendLocation = useCallback(async (lat: number, lng: number) => {
     try {
@@ -98,6 +161,72 @@ const RideAcceptScreen = () => {
   }, [acceptedRide]);
 
   useEffect(() => {
+    setWalletBalance(Number(user?.wallet?.balance || 0));
+  }, [user?.wallet?.balance]);
+
+  useEffect(() => {
+    let isMounted = true;
+    let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+    const loadWalletBalance = async () => {
+      if (!user?.id) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/api/driver/wallet/${user.id}`);
+        const data = await response.json();
+
+        if (response.ok && isMounted) {
+          setWalletBalance(Number(data?.wallet?.balance || 0));
+        }
+      } catch (error) {
+        console.warn('RideAccept wallet fetch error:', error);
+      }
+    };
+
+    loadWalletBalance();
+    refreshInterval = setInterval(loadWalletBalance, 15000);
+
+    return () => {
+      isMounted = false;
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+      }
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    pendingRideRequestRef.current = pendingRideRequest;
+  }, [pendingRideRequest]);
+
+  useEffect(() => {
+    if (pendingRideTimeoutRef.current) {
+      clearTimeout(pendingRideTimeoutRef.current);
+      pendingRideTimeoutRef.current = null;
+    }
+
+    if (pendingRideRequest) {
+      pendingRideTimeoutRef.current = setTimeout(() => {
+        setPendingRideRequest((current: any) => {
+          if (current?.requestId === pendingRideRequest.requestId) {
+            return null;
+          }
+
+          return current;
+        });
+      }, 30000);
+    }
+
+    return () => {
+      if (pendingRideTimeoutRef.current) {
+        clearTimeout(pendingRideTimeoutRef.current);
+        pendingRideTimeoutRef.current = null;
+      }
+    };
+  }, [pendingRideRequest]);
+
+  useEffect(() => {
     if (!user?.id) return;
 
     const newSocket = io(API_URL, {
@@ -114,10 +243,26 @@ const RideAcceptScreen = () => {
       if (acceptedRideRef.current) {
         return;
       }
+
+      const driverRideType = normalizeRideType(user?.ride_type || 'standard');
+      const requestRideType = normalizeRideType(rideData?.rideType);
+
+      if (requestRideType && driverRideType !== requestRideType) {
+        return;
+      }
+
       setPendingRideRequest(rideData);
     });
 
     newSocket.on('rideTaken', (payload: any) => {
+      if (
+        pendingRideRequestRef.current?.requestId &&
+        payload?.requestId &&
+        pendingRideRequestRef.current.requestId === payload.requestId
+      ) {
+        setPendingRideRequest(null);
+      }
+
       if (
         acceptedRideRef.current?.id === payload?.requestId ||
         acceptedRideRef.current?.requestId === payload?.requestId
@@ -135,7 +280,11 @@ const RideAcceptScreen = () => {
     });
 
     newSocket.on('rideUnavailable', (payload: any) => {
-      Alert.alert('Ride Unavailable', payload?.message || 'This ride is no longer available.');
+      showFeedbackModal(
+        'Ride Unavailable',
+        payload?.message || 'This ride is no longer available.',
+        'warning'
+      );
     });
 
     newSocket.on('rideCancelled', (payload: any) => {
@@ -151,10 +300,17 @@ const RideAcceptScreen = () => {
       setAcceptedRide(null);
       setTripStatus('idle');
       setPendingRideRequest(null);
-      Alert.alert(
-        'Ride Cancelled',
-        payload?.message || 'The rider cancelled this trip.'
-      );
+      setCancelledRideMessage(payload?.message || 'The rider cancelled this trip.');
+    });
+
+    newSocket.on('rideRequestTimedOut', (payload: any) => {
+      if (
+        payload?.requestId &&
+        pendingRideRequestRef.current?.requestId &&
+        payload.requestId === pendingRideRequestRef.current.requestId
+      ) {
+        setPendingRideRequest(null);
+      }
     });
 
     newSocket.on('tripStarted', (payload: any) => {
@@ -178,11 +334,12 @@ const RideAcceptScreen = () => {
             }
           : prev
       );
-      Alert.alert(
+      showFeedbackModal(
         'Trip Ended',
-        `Ride saved as completed in the database. Fare earned: N${Number(
-          payload?.fare || 0
-        ).toFixed(0)}`
+        `Ride saved as completed. Fare: N${Number(payload?.fare || 0).toFixed(0)}. Driver earned: N${Number(
+          payload?.earnedAmount ?? payload?.fare ?? 0
+        ).toFixed(0)}. Commission: N${Number(payload?.commission || 0).toFixed(0)}.`,
+        'success'
       );
     });
 
@@ -191,13 +348,21 @@ const RideAcceptScreen = () => {
         return;
       }
       setIsEndingTrip(false);
-      Alert.alert('End Trip Failed', payload?.message || 'Could not complete this trip.');
+      showFeedbackModal(
+        'End Trip Failed',
+        payload?.message || 'Could not complete this trip.',
+        'error'
+      );
     });
 
     return () => {
+      if (pendingRideTimeoutRef.current) {
+        clearTimeout(pendingRideTimeoutRef.current);
+      }
       newSocket.off('rideAssigned');
       newSocket.off('rideUnavailable');
       newSocket.off('rideCancelled');
+      newSocket.off('rideRequestTimedOut');
       newSocket.off('rideTaken');
       newSocket.off('newRideRequest');
       newSocket.off('tripStarted');
@@ -206,7 +371,7 @@ const RideAcceptScreen = () => {
       socketRef.current = null;
       newSocket.disconnect();
     };
-  }, [handleAccept, user?.id]);
+  }, [formatRideTypeLabel, handleAccept, normalizeRideType, showFeedbackModal, user?.id, user?.ride_type]);
 
   useEffect(() => {
     let watchId: number;
@@ -217,7 +382,11 @@ const RideAcceptScreen = () => {
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         );
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          Alert.alert('Permission Denied', 'Location access is needed to find rides near you.');
+          showFeedbackModal(
+            'Permission Denied',
+            'Location access is needed to find rides near you.',
+            'warning'
+          );
           return;
         }
       }
@@ -281,7 +450,7 @@ const RideAcceptScreen = () => {
       }
       if (watchId !== undefined) Geolocation.clearWatch(watchId);
     };
-  }, [reverseGeocode, updateBackendLocation, user.id]);
+  }, [reverseGeocode, showFeedbackModal, updateBackendLocation, user.id]);
 
   const handleStartTrip = () => {
     const rideId = getActiveRideId();
@@ -317,12 +486,16 @@ const RideAcceptScreen = () => {
           return Linking.openURL(browserFallbackUrl);
         })
         .catch(() => {
-          Alert.alert('Navigation Error', 'Could not open Google Maps.');
+          showFeedbackModal('Navigation Error', 'Could not open Google Maps.', 'error');
         });
       return;
     }
 
-    Alert.alert('Navigation Error', 'Destination coordinates are not available for this trip.');
+    showFeedbackModal(
+      'Navigation Error',
+      'Destination coordinates are not available for this trip.',
+      'warning'
+    );
   };
 
   const handleEndTrip = () => {
@@ -373,6 +546,22 @@ const RideAcceptScreen = () => {
     }
   };
 
+  const feedbackAccentColor =
+    feedbackModal.tone === 'error'
+      ? '#d93025'
+      : feedbackModal.tone === 'warning'
+        ? '#b45309'
+        : '#1f8b4c';
+  const feedbackBackgroundColor =
+    feedbackModal.tone === 'error'
+      ? '#ffe9e7'
+      : feedbackModal.tone === 'warning'
+        ? '#fff4db'
+        : '#eaf8ef';
+  const feedbackIcon = feedbackModal.tone === 'error' ? '!' : feedbackModal.tone === 'warning' ? 'i' : '✓';
+  const pendingRideAmount = Number(pendingRideRequest?.estimatedFare ?? pendingRideRequest?.fare ?? 0);
+  const hasInsufficientBalance = pendingRideAmount > walletBalance;
+
   return (
     <View style={styles.container}>
       <MapViewWrapper
@@ -400,6 +589,28 @@ const RideAcceptScreen = () => {
               <Text style={styles.requestLabel}>Destination</Text>
               <Text style={styles.requestValue}>{pendingRideRequest?.destinationAddress}</Text>
             </View>
+            <View style={styles.requestInfoCard}>
+              <Text style={styles.requestLabel}>Category</Text>
+              <Text style={styles.requestValue}>
+                {formatRideTypeLabel(pendingRideRequest?.rideType)}
+              </Text>
+            </View>
+            <View style={styles.requestInfoCard}>
+              <Text style={styles.requestLabel}>Trip Amount</Text>
+              <Text style={styles.requestValue}>N{pendingRideAmount.toFixed(0)}</Text>
+            </View>
+            <View style={styles.requestInfoCard}>
+              <Text style={styles.requestLabel}>Wallet Balance</Text>
+              <Text style={styles.requestValue}>N{walletBalance.toFixed(2)}</Text>
+            </View>
+            {hasInsufficientBalance ? (
+              <View style={styles.balanceWarningBox}>
+                <Text style={styles.balanceWarningTitle}>Insufficient Balance</Text>
+                <Text style={styles.balanceWarningText}>
+                  This trip amount is greater than your wallet balance. Fund your wallet before accepting.
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.requestActions}>
               <TouchableOpacity
                 style={styles.declineButton}
@@ -408,12 +619,53 @@ const RideAcceptScreen = () => {
                 <Text style={styles.declineButtonText}>Decline</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.acceptButton}
+                style={[styles.acceptButton, hasInsufficientBalance && styles.acceptButtonDisabled]}
                 onPress={() => pendingRideRequest && handleAccept(pendingRideRequest)}
+                disabled={hasInsufficientBalance}
               >
-                <Text style={styles.acceptButtonText}>Accept</Text>
+                <Text style={styles.acceptButtonText}>
+                  {hasInsufficientBalance ? 'Insufficient Balance' : 'Accept'}
+                </Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!cancelledRideMessage} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.cancelledModal}>
+            <View style={styles.cancelledIconWrap}>
+              <Text style={styles.cancelledIcon}>!</Text>
+            </View>
+            <Text style={styles.cancelledTitle}>Ride Cancelled</Text>
+            <Text style={styles.cancelledMessage}>{cancelledRideMessage}</Text>
+            <TouchableOpacity
+              style={styles.cancelledActionButton}
+              onPress={() => setCancelledRideMessage('')}
+            >
+              <Text style={styles.cancelledActionText}>Okay</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={feedbackModal.visible} transparent animationType="fade" onRequestClose={closeFeedbackModal}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.feedbackModal}>
+            <View style={[styles.feedbackIconWrap, { backgroundColor: feedbackBackgroundColor }]}>
+              <Text style={[styles.feedbackIconText, { color: feedbackAccentColor }]}>
+                {feedbackIcon}
+              </Text>
+            </View>
+            <Text style={styles.feedbackTitle}>{feedbackModal.title}</Text>
+            <Text style={styles.feedbackMessage}>{feedbackModal.message}</Text>
+            <TouchableOpacity
+              style={[styles.feedbackActionButton, { backgroundColor: feedbackAccentColor }]}
+              onPress={closeFeedbackModal}
+            >
+              <Text style={styles.feedbackActionText}>Okay</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -436,6 +688,9 @@ const RideAcceptScreen = () => {
             <Text style={styles.rideText}>To: {acceptedRide.destination_address || acceptedRide.destinationAddress}</Text>
             <Text style={styles.rideText}>
               Rider phone: {acceptedRide.rider_phone || acceptedRide.riderPhone || 'Not available'}
+            </Text>
+            <Text style={styles.rideText}>
+              Category: {formatRideTypeLabel(acceptedRide.rideType)}
             </Text>
             <Text style={styles.rideText}>Trip status: {getTripStatusLabel()}</Text>
             {tripStatus === 'ended' ? (
@@ -485,6 +740,106 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 20,
   },
+  cancelledModal: {
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  cancelledIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#ffe9e7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  cancelledIcon: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#d93025',
+  },
+  cancelledTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#1f2937',
+    marginBottom: 10,
+  },
+  cancelledMessage: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#4b5563',
+    textAlign: 'center',
+    marginBottom: 22,
+  },
+  feedbackModal: {
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  feedbackIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  feedbackIconText: {
+    fontSize: 32,
+    fontWeight: '800',
+  },
+  feedbackTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#1f2937',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  feedbackMessage: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#4b5563',
+    textAlign: 'center',
+    marginBottom: 22,
+  },
+  feedbackActionButton: {
+    width: '100%',
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  feedbackActionText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  cancelledActionButton: {
+    width: '100%',
+    backgroundColor: '#d93025',
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  cancelledActionText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
   requestModalTitle: {
     fontSize: 22,
     fontWeight: '800',
@@ -510,6 +865,25 @@ const styles = StyleSheet.create({
     color: '#333',
     lineHeight: 20,
   },
+  balanceWarningBox: {
+    backgroundColor: '#fff1f0',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#f6b6b1',
+  },
+  balanceWarningTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#d93025',
+    marginBottom: 4,
+  },
+  balanceWarningText: {
+    fontSize: 13,
+    color: '#7a2520',
+    lineHeight: 19,
+  },
   requestActions: {
     flexDirection: 'row',
     marginTop: 8,
@@ -530,6 +904,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#fa9907',
     marginLeft: 8,
+  },
+  acceptButtonDisabled: {
+    backgroundColor: '#f3c58c',
   },
   acceptButtonText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   statusCard: {
